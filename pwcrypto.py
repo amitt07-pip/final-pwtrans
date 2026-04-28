@@ -147,8 +147,14 @@ def initialize_db_pool():
         print(f"❌ Failed to initialize database pool: {e}")
         db_pool = None
 
+def _create_direct_connection():
+    """Create a direct database connection (bypassing the pool)."""
+    conn = psycopg2.connect(DATABASE_URL)
+    print("🔌 Created direct database connection (pool bypass)")
+    return conn
+
 def get_db_connection():
-    """Get a database connection from the pool."""
+    """Get a database connection from the pool, with health validation."""
     global db_pool
     
     if db_pool is None:
@@ -156,18 +162,45 @@ def get_db_connection():
     
     if db_pool:
         try:
-            return db_pool.getconn()
+            conn = db_pool.getconn()
+            # Validate the connection is still alive — the server may have
+            # closed idle connections since they were last used.
+            try:
+                conn.rollback()  # clear any stale transaction state
+                cur = conn.cursor()
+                cur.execute("SELECT 1")
+                cur.close()
+                return conn
+            except Exception:
+                print("⚠️ Pool connection is dead, discarding and creating fresh one")
+                try:
+                    db_pool.putconn(conn)
+                except Exception:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                return _create_direct_connection()
         except Exception as e:
             print(f"⚠️ Error getting connection from pool: {e}")
-            return psycopg2.connect(DATABASE_URL)
+            return _create_direct_connection()
     else:
-        return psycopg2.connect(DATABASE_URL)
+        return _create_direct_connection()
 
 def return_db_connection(conn):
     """Return a connection back to the pool, or close if it's a fallback connection."""
     global db_pool
     if not conn:
         return
+    
+    # Always reset connection state before returning to pool.
+    # If a previous operation failed without explicit rollback, the connection
+    # stays in an "aborted transaction" state and all subsequent queries on it
+    # will fail with "current transaction is aborted".
+    try:
+        conn.rollback()
+    except Exception:
+        pass
     
     if db_pool:
         try:
@@ -221,6 +254,11 @@ def load_active_deals_from_db():
     except Exception as e:
         print(f"⚠️ Error loading active deals from database: {e}")
         active_deals = {}
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
     finally:
         if conn:
             return_db_connection(conn)
@@ -274,6 +312,11 @@ def save_active_deal_to_db(trade_id, deal_data):
         print(f"💾 Saved deal {trade_id} to database")
     except Exception as e:
         print(f"⚠️ Error saving deal to database: {e}")
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
     finally:
         if conn:
             return_db_connection(conn)
@@ -290,6 +333,11 @@ def delete_active_deal_from_db(trade_id):
         print(f"🗑️ Deleted deal {trade_id} from database")
     except Exception as e:
         print(f"⚠️ Error deleting deal from database: {e}")
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
     finally:
         if conn:
             return_db_connection(conn)
@@ -330,68 +378,90 @@ def save_deal_to_history_db(deal_data):
         print(f"📚 Saved deal {deal_data['trade_id']} to history")
     except Exception as e:
         print(f"⚠️ Error saving deal to history: {e}")
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
     finally:
         if conn:
             return_db_connection(conn)
+
+def _execute_move_deal(trade_id, deal_data, conn):
+    """Execute the actual move-deal-to-history transaction on the given connection."""
+    cur = conn.cursor()
+    
+    params = (
+        deal_data['trade_id'],
+        deal_data['buyer'],
+        deal_data.get('buyer_id'),
+        deal_data['seller'],
+        deal_data.get('seller_id'),
+        deal_data['deal_amount'],
+        deal_data.get('received_amount'),
+        deal_data.get('fee_amount'),
+        deal_data.get('release_amount'),
+        deal_data['escrow_admin'],
+        deal_data.get('escrow_admin_id'),
+        deal_data.get('escrow_admin_name'),
+        deal_data['status'],
+        deal_data.get('created_at')
+    )
+    
+    # 1. Insert into history (ON CONFLICT to handle duplicate from a previous partial attempt)
+    cur.execute("""
+        INSERT INTO deal_history (
+            trade_id, buyer, buyer_id, seller, seller_id,
+            deal_amount, received_amount, fee_amount, release_amount,
+            escrow_admin, escrow_admin_id, escrow_admin_name,
+            status, created_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (trade_id) DO NOTHING
+    """, params)
+    
+    # 2. Delete from active deals
+    cur.execute("DELETE FROM active_deals WHERE trade_id = %s", (trade_id,))
+    
+    conn.commit()
+    cur.close()
 
 def move_deal_to_history_db(trade_id, deal_data):
     """
     Move a deal from active to history in a single transaction.
     This prevents data loss if either operation fails.
-    Returns True if successful, False otherwise.
+    Retries once with a fresh connection on failure.
+    Returns (True, None) if successful, (False, error_message) otherwise.
     """
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # Start transaction (autocommit is off by default)
-        # 1. Insert into history
-        cur.execute("""
-            INSERT INTO deal_history (
-                trade_id, buyer, buyer_id, seller, seller_id,
-                deal_amount, received_amount, fee_amount, release_amount,
-                escrow_admin, escrow_admin_id, escrow_admin_name,
-                status, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (
-            deal_data['trade_id'],
-            deal_data['buyer'],
-            deal_data.get('buyer_id'),
-            deal_data['seller'],
-            deal_data.get('seller_id'),
-            deal_data['deal_amount'],
-            deal_data.get('received_amount'),
-            deal_data.get('fee_amount'),
-            deal_data.get('release_amount'),
-            deal_data['escrow_admin'],
-            deal_data.get('escrow_admin_id'),
-            deal_data.get('escrow_admin_name'),
-            deal_data['status'],
-            deal_data.get('created_at')
-        ))
-        
-        # 2. Delete from active deals
-        cur.execute("DELETE FROM active_deals WHERE trade_id = %s", (trade_id,))
-        
-        # Commit transaction (both operations succeed or both fail)
-        conn.commit()
-        cur.close()
-        
-        print(f"✅ Successfully moved deal {trade_id} to history (status: {deal_data['status']})")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Error moving deal to history: {e}")
+    last_error = None
+    
+    for attempt in range(2):
+        conn = None
         try:
+            if attempt == 0:
+                conn = get_db_connection()
+            else:
+                # Second attempt: force a fresh direct connection
+                print(f"🔄 Retrying move_deal with fresh connection (attempt {attempt + 1})")
+                conn = _create_direct_connection()
+            
+            _execute_move_deal(trade_id, deal_data, conn)
+            
+            print(f"✅ Successfully moved deal {trade_id} to history (status: {deal_data['status']})")
+            return True, None
+            
+        except Exception as e:
+            last_error = str(e)
+            print(f"❌ Error moving deal to history (attempt {attempt + 1}): {e}")
+            try:
+                if conn:
+                    conn.rollback()
+            except Exception:
+                pass
+        finally:
             if conn:
-                conn.rollback()
-        except:
-            pass
-        return False
-    finally:
-        if conn:
-            return_db_connection(conn)
+                return_db_connection(conn)
+    
+    return False, last_error
 
 def fetch_user_lifetime_stats(user_id, username_lower):
     """
@@ -495,6 +565,11 @@ def fetch_user_lifetime_stats(user_id, username_lower):
     except Exception as e:
         print(f"⚠️ Error fetching stats from database: {e}")
         print("📁 Falling back to JSON file...")
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
         
         # Fallback to JSON file (only count completed deals)
         global deal_history
@@ -970,8 +1045,8 @@ async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "status": "completed"
     }
     
-    # Move deal to history in a transaction-safe manner
-    db_success = move_deal_to_history_db(trade_id, history_entry)
+    # Move deal to history in a transaction-safe manner (retries once on failure)
+    db_success, db_error = move_deal_to_history_db(trade_id, history_entry)
     
     # Only remove from memory if database operation succeeded
     if db_success:
@@ -982,8 +1057,9 @@ async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Remove from active deals memory
         del active_deals[trade_id]
     else:
-        # If database operation failed, notify admin but keep deal active
-        await update.message.reply_text("⚠️ Database error occurred. Deal remains active. Please try again or contact support.")
+        # If database operation failed, notify admin with the actual error
+        error_detail = f"\n\nError: {db_error}" if db_error else ""
+        await update.message.reply_text(f"⚠️ Database error occurred. Deal remains active. Please try again or contact support.{error_detail}")
     
     # Delete the /close command message
     try:
@@ -1077,8 +1153,8 @@ async def refund_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "status": "refunded"
     }
     
-    # Move deal to history in a transaction-safe manner
-    db_success = move_deal_to_history_db(trade_id, history_entry)
+    # Move deal to history in a transaction-safe manner (retries once on failure)
+    db_success, db_error = move_deal_to_history_db(trade_id, history_entry)
     
     # Only remove from memory if database operation succeeded
     if db_success:
@@ -1089,8 +1165,9 @@ async def refund_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Remove from active deals memory
         del active_deals[trade_id]
     else:
-        # If database operation failed, notify admin but keep deal active
-        await update.message.reply_text("⚠️ Database error occurred. Deal remains active. Please try again or contact support.")
+        # If database operation failed, notify admin with the actual error
+        error_detail = f"\n\nError: {db_error}" if db_error else ""
+        await update.message.reply_text(f"⚠️ Database error occurred. Deal remains active. Please try again or contact support.{error_detail}")
     
     # Delete the /refund command message
     try:
@@ -1317,6 +1394,11 @@ async def adminwise_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     except Exception as e:
         print(f"⚠️ Error fetching completed deals from database: {e}")
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
         # Fallback to JSON file (but filter by status='completed')
         for deal in deal_history:
             created_at = deal.get('created_at')
