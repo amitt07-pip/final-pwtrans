@@ -169,6 +169,15 @@ def return_db_connection(conn):
     if not conn:
         return
     
+    # Always reset connection state before returning to pool.
+    # If a previous operation failed without explicit rollback, the connection
+    # stays in an "aborted transaction" state and all subsequent queries on it
+    # will fail with "current transaction is aborted".
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+    
     if db_pool:
         try:
             db_pool.putconn(conn)
@@ -221,6 +230,11 @@ def load_active_deals_from_db():
     except Exception as e:
         print(f"⚠️ Error loading active deals from database: {e}")
         active_deals = {}
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
     finally:
         if conn:
             return_db_connection(conn)
@@ -274,6 +288,11 @@ def save_active_deal_to_db(trade_id, deal_data):
         print(f"💾 Saved deal {trade_id} to database")
     except Exception as e:
         print(f"⚠️ Error saving deal to database: {e}")
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
     finally:
         if conn:
             return_db_connection(conn)
@@ -290,6 +309,11 @@ def delete_active_deal_from_db(trade_id):
         print(f"🗑️ Deleted deal {trade_id} from database")
     except Exception as e:
         print(f"⚠️ Error deleting deal from database: {e}")
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
     finally:
         if conn:
             return_db_connection(conn)
@@ -330,6 +354,11 @@ def save_deal_to_history_db(deal_data):
         print(f"📚 Saved deal {deal_data['trade_id']} to history")
     except Exception as e:
         print(f"⚠️ Error saving deal to history: {e}")
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
     finally:
         if conn:
             return_db_connection(conn)
@@ -495,6 +524,11 @@ def fetch_user_lifetime_stats(user_id, username_lower):
     except Exception as e:
         print(f"⚠️ Error fetching stats from database: {e}")
         print("📁 Falling back to JSON file...")
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
         
         # Fallback to JSON file (only count completed deals)
         global deal_history
@@ -1317,6 +1351,11 @@ async def adminwise_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     except Exception as e:
         print(f"⚠️ Error fetching completed deals from database: {e}")
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
         # Fallback to JSON file (but filter by status='completed')
         for deal in deal_history:
             created_at = deal.get('created_at')
