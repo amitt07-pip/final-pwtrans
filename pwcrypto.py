@@ -4,7 +4,7 @@ if sys.version_info >= (3, 13):
     sys.modules["imghdr"] = types.ModuleType("imghdr")
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, ConversationHandler, MessageHandler, filters
 import re, random, string, os, json
 from datetime import datetime
 from telethon import TelegramClient
@@ -197,6 +197,17 @@ def ensure_tables_exist():
             )
         """)
         
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS manual_stats (
+                username TEXT PRIMARY KEY,
+                user_id TEXT,
+                total_volume NUMERIC DEFAULT 0,
+                completed_deals INTEGER DEFAULT 0,
+                highest_deal NUMERIC DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
         conn.commit()
         cur.close()
         print("✅ Database tables verified/created")
@@ -207,6 +218,50 @@ def ensure_tables_exist():
                 conn.rollback()
             except:
                 pass
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+def save_manual_stats(username, user_id, total_volume, completed_deals, highest_deal):
+    """Save or update manual stats for a user."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO manual_stats (username, user_id, total_volume, completed_deals, highest_deal, updated_at)
+            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (username) DO UPDATE SET
+                user_id = COALESCE(EXCLUDED.user_id, manual_stats.user_id),
+                total_volume = EXCLUDED.total_volume,
+                completed_deals = EXCLUDED.completed_deals,
+                highest_deal = EXCLUDED.highest_deal,
+                updated_at = CURRENT_TIMESTAMP
+        """, (username.lower(), str(user_id) if user_id else None, total_volume, completed_deals, highest_deal))
+        conn.commit()
+        cur.close()
+        print(f"💾 Saved manual stats for {username}")
+        return True
+    except Exception as e:
+        print(f"⚠️ Error saving manual stats: {e}")
+        return False
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+def fetch_manual_stats(username_lower):
+    """Fetch manual stats for a user."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM manual_stats WHERE username = %s", (username_lower,))
+        result = cur.fetchone()
+        cur.close()
+        return result
+    except Exception as e:
+        print(f"⚠️ Error fetching manual stats: {e}")
+        return None
     finally:
         if conn:
             return_db_connection(conn)
@@ -1284,8 +1339,15 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             deal_amount = deal.get('deal_amount', 0)
             ongoing_volume += float(deal_amount) if deal_amount else 0.0
     
-    # Calculate total volume (completed + ongoing)
-    total_volume = stats['total_volume'] + ongoing_volume
+    # Fetch manual stats and add on top of calculated stats
+    manual = fetch_manual_stats(target_username_lower)
+    manual_volume = float(manual['total_volume']) if manual and manual.get('total_volume') else 0.0
+    manual_deals = int(manual['completed_deals']) if manual and manual.get('completed_deals') else 0
+    manual_highest = float(manual['highest_deal']) if manual and manual.get('highest_deal') else 0.0
+    
+    combined_volume = stats['total_volume'] + manual_volume + ongoing_volume
+    combined_deals = stats['total_deals'] + manual_deals
+    combined_highest = max(stats['highest_deal'], manual_highest)
     
     # Format message
     ranking_display = f"#{stats['ranking']}" if stats['ranking'] != "N/A" else "N/A"
@@ -1296,10 +1358,10 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         f"📊 **Participant Stats for {username_escaped}**\n\n"
         f"👑 Ranking: {ranking_display}\n"
-        f"📈 Total Volume: ${total_volume:.2f}\n"
-        f"🔢 Completed Deals: {stats['total_deals']}\n"
+        f"📈 Total Volume: ${combined_volume:.2f}\n"
+        f"🔢 Completed Deals: {combined_deals}\n"
         f"⏳ Ongoing Deals: {ongoing_deals}\n"
-        f"⚡ Highest Deal: ${stats['highest_deal']:.2f}\n\n"
+        f"⚡ Highest Deal: ${combined_highest:.2f}\n\n"
         f"📊 Always use @Escrow\\_Pagal for safer transactions!"
     )
     
@@ -1429,6 +1491,132 @@ async def adminwise_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message, parse_mode='Markdown')
 
 # ==========================
+# /ADDSTAT COMMAND (Conversation)
+# ==========================
+
+ADDSTAT_VOLUME, ADDSTAT_DEALS, ADDSTAT_HIGHEST = range(3)
+
+async def addstat_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point for /addstat. Identifies the target user and asks for Total Volume."""
+    user = update.message.from_user
+    if user.id not in ADMINS:
+        await update.message.reply_text("🚫 Only authorized admins can use this command.")
+        return ConversationHandler.END
+
+    target_username = None
+    target_user_id = None
+
+    # Option 1: Reply to a user's message
+    if update.message.reply_to_message:
+        replied_user = update.message.reply_to_message.from_user
+        target_username = f"@{replied_user.username}" if replied_user.username else None
+        target_user_id = replied_user.id
+        if not target_username:
+            await update.message.reply_text("⚠️ The replied user has no username.")
+            return ConversationHandler.END
+
+    # Option 2: Argument provided (username or user ID)
+    elif context.args and len(context.args) > 0:
+        arg = context.args[0]
+        if arg.startswith('@'):
+            target_username = arg
+        elif arg.isdigit():
+            target_user_id = int(arg)
+            # Try to resolve username from user ID via Telethon
+            if telethon_client:
+                try:
+                    entity = await telethon_client.get_entity(target_user_id)
+                    if entity.username:
+                        target_username = f"@{entity.username}"
+                except Exception as e:
+                    print(f"⚠️ Could not resolve user ID {arg}: {e}")
+            if not target_username:
+                target_username = f"ID:{arg}"
+        else:
+            target_username = f"@{arg}"
+    else:
+        await update.message.reply_text(
+            "⚠️ Please specify a user.\n\n"
+            "Usage:\n"
+            "• /addstat @username\n"
+            "• /addstat <user_id>\n"
+            "• Reply to a user's message with /addstat"
+        )
+        return ConversationHandler.END
+
+    # Store target info in context for later steps
+    context.user_data['addstat_username'] = target_username
+    context.user_data['addstat_user_id'] = target_user_id
+
+    await update.message.reply_text(
+        f"📊 Adding stats for {target_username}\n\n"
+        f"Step 1/3: Enter Total Volume (in $):"
+    )
+    return ADDSTAT_VOLUME
+
+async def addstat_volume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive Total Volume and ask for Completed Deals."""
+    try:
+        volume = float(update.message.text.strip().replace('$', '').replace(',', ''))
+    except ValueError:
+        await update.message.reply_text("❌ Invalid number. Please enter a valid Total Volume (e.g. 5000):")
+        return ADDSTAT_VOLUME
+
+    context.user_data['addstat_volume'] = volume
+    await update.message.reply_text("Step 2/3: Enter Completed Deals (number):")
+    return ADDSTAT_DEALS
+
+async def addstat_deals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive Completed Deals and ask for Highest Deal."""
+    try:
+        deals = int(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text("❌ Invalid number. Please enter a valid number of Completed Deals (e.g. 25):")
+        return ADDSTAT_DEALS
+
+    context.user_data['addstat_deals'] = deals
+    await update.message.reply_text("Step 3/3: Enter Highest Deal (in $):")
+    return ADDSTAT_HIGHEST
+
+async def addstat_highest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive Highest Deal and save all stats."""
+    try:
+        highest = float(update.message.text.strip().replace('$', '').replace(',', ''))
+    except ValueError:
+        await update.message.reply_text("❌ Invalid number. Please enter a valid Highest Deal (e.g. 500):")
+        return ADDSTAT_HIGHEST
+
+    username = context.user_data.get('addstat_username')
+    user_id = context.user_data.get('addstat_user_id')
+    volume = context.user_data.get('addstat_volume')
+    deals = context.user_data.get('addstat_deals')
+
+    success = save_manual_stats(username, user_id, volume, deals, highest)
+
+    if success:
+        await update.message.reply_text(
+            f"✅ Stats updated for {username}\n\n"
+            f"Total Volume: ${volume:,.2f}\n"
+            f"Completed Deals: {deals}\n"
+            f"Highest Deal: ${highest:,.2f}"
+        )
+    else:
+        await update.message.reply_text("❌ Failed to save stats. Database error.")
+
+    # Clean up user_data
+    for key in ['addstat_username', 'addstat_user_id', 'addstat_volume', 'addstat_deals']:
+        context.user_data.pop(key, None)
+
+    return ConversationHandler.END
+
+async def addstat_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel the /addstat conversation."""
+    for key in ['addstat_username', 'addstat_user_id', 'addstat_volume', 'addstat_deals']:
+        context.user_data.pop(key, None)
+    await update.message.reply_text("❌ /addstat cancelled.")
+    return ConversationHandler.END
+
+# ==========================
 # MAIN FUNCTION
 # ==========================
 
@@ -1440,6 +1628,18 @@ def main():
     load_active_deals_from_db()
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Conversation handler for /addstat (must be added before simple command handlers)
+    addstat_conv = ConversationHandler(
+        entry_points=[CommandHandler("addstat", addstat_start)],
+        states={
+            ADDSTAT_VOLUME: [MessageHandler(filters.TEXT & ~filters.COMMAND, addstat_volume)],
+            ADDSTAT_DEALS: [MessageHandler(filters.TEXT & ~filters.COMMAND, addstat_deals)],
+            ADDSTAT_HIGHEST: [MessageHandler(filters.TEXT & ~filters.COMMAND, addstat_highest)],
+        },
+        fallbacks=[CommandHandler("cancel", addstat_cancel)],
+    )
+    app.add_handler(addstat_conv)
 
     app.add_handler(CommandHandler("add", add_deal))
     app.add_handler(CallbackQueryHandler(fee_selected, pattern=r"^fee_"))
