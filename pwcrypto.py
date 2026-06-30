@@ -228,6 +228,17 @@ def save_manual_stats(username, user_id, total_volume, completed_deals, highest_
     try:
         conn = get_db_connection()
         cur = conn.cursor()
+        # Ensure table exists before inserting
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS manual_stats (
+                username TEXT PRIMARY KEY,
+                user_id TEXT,
+                total_volume NUMERIC DEFAULT 0,
+                completed_deals INTEGER DEFAULT 0,
+                highest_deal NUMERIC DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         cur.execute("""
             INSERT INTO manual_stats (username, user_id, total_volume, completed_deals, highest_deal, updated_at)
             VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
@@ -244,6 +255,11 @@ def save_manual_stats(username, user_id, total_volume, completed_deals, highest_
         return True
     except Exception as e:
         print(f"⚠️ Error saving manual stats: {e}")
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
         return False
     finally:
         if conn:
