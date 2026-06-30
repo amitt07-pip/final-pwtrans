@@ -800,7 +800,7 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             f"<tg-emoji emoji-id='5987880246865565644'>💰</tg-emoji> <b>Deal Amount:</b> ${deal_amount:.2f}\n"
             f"<tg-emoji emoji-id='5877307202888273539'>📤</tg-emoji> <b>Received Amount:</b> ${received_amount:.2f}\n"
-            f"<tg-emoji emoji-id='5967548335542767952'>📤</tg-emoji> <b>Release/Refund Amount:</b> ${release_amount:.2f} <b>[NFN]</b>\n"
+            f"<tg-emoji emoji-id='5967548335542767952'>📤</tg-emoji> <b>Release/Refund Amount:</b> ${release_amount:.2f}\n"
             f"<tg-emoji emoji-id='5936017305585586269'>🆔</tg-emoji> <b>Trade ID:</b> {trade_id}\n\n"
             f"<b>Continue the Deal</b>\n"
             f"<b>Buyer:</b> {buyer_info}\n"
@@ -820,7 +820,7 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await update.message.reply_to_message.reply_text(
-            f"Festival offer is active, but one or both users do not have '@Escrow_PagaL' in their bio.\nPlease select a fee for this deal:",
+            "Please select a fee for this deal:",
             reply_markup=reply_markup
         )
     
@@ -874,7 +874,7 @@ async def fee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         f"<tg-emoji emoji-id='5987880246865565644'>💰</tg-emoji> <b>Deal Amount:</b> ${deal_amount:.2f}\n"
         f"<tg-emoji emoji-id='5877307202888273539'>📤</tg-emoji> <b>Received Amount:</b> ${received_amount:.2f}\n"
-        f"<tg-emoji emoji-id='5967548335542767952'>📤</tg-emoji> <b>Release/Refund Amount:</b> ${release_amount:.2f} <b>[NFN]</b>\n"
+        f"<tg-emoji emoji-id='5967548335542767952'>📤</tg-emoji> <b>Release/Refund Amount:</b> ${release_amount:.2f}\n"
         f"<tg-emoji emoji-id='5936017305585586269'>🆔</tg-emoji> <b>Trade ID:</b> {trade_id}\n\n"
         f"<b>Continue the Deal</b>\n"
         f"<b>Buyer:</b> {buyer_info}\n"
