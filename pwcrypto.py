@@ -941,10 +941,10 @@ async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     seller_info = f"{deal['seller']}"
     
     msg = (
-        f"✅ <b>Deal Completed</b>\n"
-        f"🆔 <b>Trade ID:</b> {trade_id}\n"
-        f"📤 <b>Released:</b> ${deal['release_amount']:.2f}\n"
-        f"ℹ️ <b>Total Released:</b> ${deal['release_amount']:.2f}\n\n"
+        f"<tg-emoji emoji-id='5197474765387864959'>✅</tg-emoji> <b>Deal Completed</b>\n"
+        f"<tg-emoji emoji-id='5936017305585586269'>🆔</tg-emoji> <b>Trade ID:</b> {trade_id}\n"
+        f"<tg-emoji emoji-id='5879785854284599288'>📤</tg-emoji> <b>Released:</b> ${deal['release_amount']:.2f}\n"
+        f"<tg-emoji emoji-id='5879785854284599288'>ℹ️</tg-emoji> <b>Total Released:</b> ${deal['release_amount']:.2f}\n\n"
         f"<b>Buyer:</b> {buyer_info}\n"
         f"<b>Seller:</b> {seller_info}\n\n"
         f"🛡 <b>Escrowed By:</b> {deal['escrow_admin']}\n"
