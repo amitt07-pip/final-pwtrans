@@ -222,9 +222,41 @@ def ensure_tables_exist():
         if conn:
             return_db_connection(conn)
 
+MANUAL_STATS_FILE = "manual_stats.json"
+
+def load_manual_stats_json():
+    """Load manual stats from JSON file."""
+    try:
+        if os.path.exists(MANUAL_STATS_FILE):
+            with open(MANUAL_STATS_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"⚠️ Error loading manual stats JSON: {e}")
+    return {}
+
+def save_manual_stats_json(username, user_id, total_volume, completed_deals, highest_deal):
+    """Save manual stats to JSON file as fallback."""
+    try:
+        all_stats = load_manual_stats_json()
+        all_stats[username.lower()] = {
+            "username": username.lower(),
+            "user_id": str(user_id) if user_id else None,
+            "total_volume": total_volume,
+            "completed_deals": completed_deals,
+            "highest_deal": highest_deal
+        }
+        with open(MANUAL_STATS_FILE, 'w') as f:
+            json.dump(all_stats, f, indent=2)
+        print(f"💾 Saved manual stats for {username} to JSON")
+        return True
+    except Exception as e:
+        print(f"⚠️ Error saving manual stats to JSON: {e}")
+        return False
+
 def save_manual_stats(username, user_id, total_volume, completed_deals, highest_deal):
-    """Save or update manual stats for a user."""
+    """Save or update manual stats for a user. Falls back to JSON if DB fails."""
     conn = None
+    db_error = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -252,21 +284,26 @@ def save_manual_stats(username, user_id, total_volume, completed_deals, highest_
         conn.commit()
         cur.close()
         print(f"💾 Saved manual stats for {username}")
-        return True
+        return True, None
     except Exception as e:
-        print(f"⚠️ Error saving manual stats: {e}")
+        db_error = str(e)
+        print(f"⚠️ Error saving manual stats to DB: {e}")
         if conn:
             try:
                 conn.rollback()
             except:
                 pass
-        return False
+        # Fallback to JSON
+        json_ok = save_manual_stats_json(username, user_id, total_volume, completed_deals, highest_deal)
+        if json_ok:
+            return True, "saved_to_json"
+        return False, db_error
     finally:
         if conn:
             return_db_connection(conn)
 
 def fetch_manual_stats(username_lower):
-    """Fetch manual stats for a user."""
+    """Fetch manual stats for a user. Falls back to JSON if DB fails."""
     conn = None
     try:
         conn = get_db_connection()
@@ -274,13 +311,17 @@ def fetch_manual_stats(username_lower):
         cur.execute("SELECT * FROM manual_stats WHERE username = %s", (username_lower,))
         result = cur.fetchone()
         cur.close()
-        return result
+        if result:
+            return result
     except Exception as e:
-        print(f"⚠️ Error fetching manual stats: {e}")
-        return None
+        print(f"⚠️ Error fetching manual stats from DB: {e}")
     finally:
         if conn:
             return_db_connection(conn)
+    
+    # Fallback to JSON
+    all_stats = load_manual_stats_json()
+    return all_stats.get(username_lower)
 
 def get_db_connection():
     """Get a database connection from the pool."""
@@ -1607,17 +1648,18 @@ async def addstat_highest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     volume = context.user_data.get('addstat_volume')
     deals = context.user_data.get('addstat_deals')
 
-    success = save_manual_stats(username, user_id, volume, deals, highest)
+    success, error_info = save_manual_stats(username, user_id, volume, deals, highest)
 
     if success:
+        note = " (saved to local file - DB unavailable)" if error_info == "saved_to_json" else ""
         await update.message.reply_text(
-            f"✅ Stats updated for {username}\n\n"
+            f"✅ Stats updated for {username}{note}\n\n"
             f"Total Volume: ${volume:,.2f}\n"
             f"Completed Deals: {deals}\n"
             f"Highest Deal: ${highest:,.2f}"
         )
     else:
-        await update.message.reply_text("❌ Failed to save stats. Database error.")
+        await update.message.reply_text(f"❌ Failed to save stats.\nError: {error_info}")
 
     # Clean up user_data
     for key in ['addstat_username', 'addstat_user_id', 'addstat_volume', 'addstat_deals']:
