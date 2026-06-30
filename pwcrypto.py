@@ -798,14 +798,14 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             seller_info += f" [{seller_id}]"
         
         msg = (
-            f"💰 <b>Deal Amount:</b> ${deal_amount:.2f}\n"
-            f"📤 <b>Received Amount:</b> ${received_amount:.2f}\n"
-            f"📤 <b>Release/Refund Amount:</b> ${release_amount:.2f} <b>[NFN]</b>\n"
-            f"🆔 <b>Trade ID:</b> {trade_id}\n\n"
+            f"<tg-emoji emoji-id='5987880246865565644'>💰</tg-emoji> <b>Deal Amount:</b> ${deal_amount:.2f}\n"
+            f"<tg-emoji emoji-id='5877307202888273539'>📤</tg-emoji> <b>Received Amount:</b> ${received_amount:.2f}\n"
+            f"<tg-emoji emoji-id='5967548335542767952'>📤</tg-emoji> <b>Release/Refund Amount:</b> ${release_amount:.2f} <b>[NFN]</b>\n"
+            f"<tg-emoji emoji-id='5936017305585586269'>🆔</tg-emoji> <b>Trade ID:</b> {trade_id}\n\n"
             f"<b>Continue the Deal</b>\n"
             f"<b>Buyer:</b> {buyer_info}\n"
             f"<b>Seller:</b> {seller_info}\n\n"
-            f"🛡 <b>Escrowed By:</b> {active_deals[trade_id]['escrow_admin']}"
+            f"<tg-emoji emoji-id='5920052658743283381'>🛡</tg-emoji> <b>Escrowed By:</b> {active_deals[trade_id]['escrow_admin']}"
         )
         
         await update.message.reply_to_message.reply_text(msg, parse_mode="HTML")
@@ -872,14 +872,14 @@ async def fee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         seller_info += f" [{seller_id}]"
     
     msg = (
-        f"💰 <b>Deal Amount:</b> ${deal_amount:.2f}\n"
-        f"📤 <b>Received Amount:</b> ${received_amount:.2f}\n"
-        f"📤 <b>Release/Refund Amount:</b> ${release_amount:.2f} <b>[NFN]</b>\n"
-        f"🆔 <b>Trade ID:</b> {trade_id}\n\n"
+        f"<tg-emoji emoji-id='5987880246865565644'>💰</tg-emoji> <b>Deal Amount:</b> ${deal_amount:.2f}\n"
+        f"<tg-emoji emoji-id='5877307202888273539'>📤</tg-emoji> <b>Received Amount:</b> ${received_amount:.2f}\n"
+        f"<tg-emoji emoji-id='5967548335542767952'>📤</tg-emoji> <b>Release/Refund Amount:</b> ${release_amount:.2f} <b>[NFN]</b>\n"
+        f"<tg-emoji emoji-id='5936017305585586269'>🆔</tg-emoji> <b>Trade ID:</b> {trade_id}\n\n"
         f"<b>Continue the Deal</b>\n"
         f"<b>Buyer:</b> {buyer_info}\n"
         f"<b>Seller:</b> {seller_info}\n\n"
-        f"🛡 <b>Escrowed By:</b> {deal['escrow_admin']}"
+        f"<tg-emoji emoji-id='5920052658743283381'>🛡</tg-emoji> <b>Escrowed By:</b> {deal['escrow_admin']}"
     )
 
     await query.edit_message_text(msg, parse_mode="HTML")
