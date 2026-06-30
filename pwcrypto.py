@@ -975,17 +975,15 @@ async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Move deal to history in a transaction-safe manner
     db_success = move_deal_to_history_db(trade_id, history_entry)
     
-    # Only remove from memory if database operation succeeded
-    if db_success:
-        # Save to JSON history file (for backwards compatibility)
-        deal_history.append(history_entry)
-        save_history()
-        
-        # Remove from active deals memory
-        del active_deals[trade_id]
-    else:
-        # If database operation failed, notify admin but keep deal active
-        await update.message.reply_text("⚠️ Database error occurred. Deal remains active. Please try again or contact support.")
+    if not db_success:
+        print(f"⚠️ Transaction move failed for {trade_id}, attempting individual operations...")
+        save_deal_to_history_db(history_entry)
+        delete_active_deal_from_db(trade_id)
+    
+    # Always save to JSON history and remove from memory
+    deal_history.append(history_entry)
+    save_history()
+    del active_deals[trade_id]
     
     # Delete the /close command message
     try:
@@ -1082,17 +1080,15 @@ async def refund_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Move deal to history in a transaction-safe manner
     db_success = move_deal_to_history_db(trade_id, history_entry)
     
-    # Only remove from memory if database operation succeeded
-    if db_success:
-        # Save to JSON history file (for backwards compatibility)
-        deal_history.append(history_entry)
-        save_history()
-        
-        # Remove from active deals memory
-        del active_deals[trade_id]
-    else:
-        # If database operation failed, notify admin but keep deal active
-        await update.message.reply_text("⚠️ Database error occurred. Deal remains active. Please try again or contact support.")
+    if not db_success:
+        print(f"⚠️ Transaction move failed for {trade_id}, attempting individual operations...")
+        save_deal_to_history_db(history_entry)
+        delete_active_deal_from_db(trade_id)
+    
+    # Always save to JSON history and remove from memory
+    deal_history.append(history_entry)
+    save_history()
+    del active_deals[trade_id]
     
     # Delete the /refund command message
     try:
