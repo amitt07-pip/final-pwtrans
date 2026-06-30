@@ -941,13 +941,15 @@ async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     seller_info = f"{deal['seller']}"
     
     msg = (
-        f"<tg-emoji emoji-id='5197474765387864959'>✅</tg-emoji> <b>Deal Completed</b>\n"
-        f"<tg-emoji emoji-id='5936017305585586269'>🆔</tg-emoji> <b>Trade ID:</b> {trade_id}\n"
-        f"<tg-emoji emoji-id='5879785854284599288'>📤</tg-emoji> <b>Released:</b> ${deal['release_amount']:.2f}\n"
-        f"<tg-emoji emoji-id='5879785854284599288'>ℹ️</tg-emoji> <b>Total Released:</b> ${deal['release_amount']:.2f}\n\n"
-        f"<b>Buyer:</b> {buyer_info}\n"
-        f"<b>Seller:</b> {seller_info}\n\n"
-        f"🛡 <b>Escrowed By:</b> {deal['escrow_admin']}\n"
+        f"<tg-emoji emoji-id='5197474765387864959'>✅</tg-emoji> Deal Completed\n"
+        f"<tg-emoji emoji-id='5936017305585586269'>🆔</tg-emoji> Trade ID: {trade_id}\n"
+        f"<tg-emoji emoji-id='5879785854284599288'>📤</tg-emoji> Released: ${deal['release_amount']:.2f}\n"
+        f"<tg-emoji emoji-id='5879785854284599288'>ℹ️</tg-emoji> Total Released: ${deal['release_amount']:.2f}\n\n"
+        f"Buyer: {buyer_info}\n"
+        f"Seller: {seller_info}\n\n"
+        f"<tg-emoji emoji-id='5920052658743283381'>🛡</tg-emoji> Escrowed By: {deal['escrow_admin']}\n\n"
+        f"~ {deal['seller']} and {deal['buyer']} are requested to drop the vouch before leaving👇🏻\n\n"
+        f"<code>Vouch @PAGALWORLD for ${deal['deal_amount']:.2f} smooth escrow deal❤️</code>"
     )
 
     await update.message.reply_to_message.reply_text(msg, parse_mode="HTML")
