@@ -143,9 +143,73 @@ def initialize_db_pool():
             dsn=DATABASE_URL
         )
         print("✅ Database connection pool initialized (2-10 connections)")
+        ensure_tables_exist()
     except Exception as e:
         print(f"❌ Failed to initialize database pool: {e}")
         db_pool = None
+
+def ensure_tables_exist():
+    """Create required tables if they don't exist."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS active_deals (
+                trade_id TEXT PRIMARY KEY,
+                buyer TEXT,
+                buyer_id TEXT,
+                seller TEXT,
+                seller_id TEXT,
+                deal_amount NUMERIC,
+                received_amount NUMERIC,
+                fee_percent NUMERIC,
+                fee_amount NUMERIC,
+                release_amount NUMERIC,
+                escrow_admin TEXT,
+                escrow_admin_name TEXT,
+                escrow_admin_id BIGINT,
+                source_message_id BIGINT,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS deal_history (
+                id SERIAL PRIMARY KEY,
+                trade_id TEXT,
+                buyer TEXT,
+                buyer_id TEXT,
+                seller TEXT,
+                seller_id TEXT,
+                deal_amount NUMERIC,
+                received_amount NUMERIC,
+                fee_amount NUMERIC,
+                release_amount NUMERIC,
+                escrow_admin TEXT,
+                escrow_admin_id TEXT,
+                escrow_admin_name TEXT,
+                status TEXT,
+                created_at TIMESTAMP,
+                completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        conn.commit()
+        cur.close()
+        print("✅ Database tables verified/created")
+    except Exception as e:
+        print(f"⚠️ Error ensuring tables exist: {e}")
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
+    finally:
+        if conn:
+            return_db_connection(conn)
 
 def get_db_connection():
     """Get a database connection from the pool."""
