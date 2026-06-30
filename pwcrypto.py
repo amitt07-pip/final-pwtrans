@@ -324,7 +324,7 @@ def fetch_manual_stats(username_lower):
     return all_stats.get(username_lower)
 
 def get_db_connection():
-    """Get a database connection from the pool."""
+    """Get a database connection from the pool with health check."""
     global db_pool
     
     if db_pool is None:
@@ -332,10 +332,32 @@ def get_db_connection():
     
     if db_pool:
         try:
-            return db_pool.getconn()
+            conn = db_pool.getconn()
+            # Health check: test if connection is still alive
+            if conn.closed:
+                print("⚠️ Pool returned a closed connection, getting fresh one...")
+                db_pool.putconn(conn, close=True)
+                conn = db_pool.getconn()
+            else:
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT 1")
+                    cur.close()
+                except Exception:
+                    print("⚠️ Pool connection stale, reconnecting...")
+                    try:
+                        db_pool.putconn(conn, close=True)
+                    except:
+                        pass
+                    conn = psycopg2.connect(DATABASE_URL)
+            return conn
         except Exception as e:
             print(f"⚠️ Error getting connection from pool: {e}")
-            return psycopg2.connect(DATABASE_URL)
+            try:
+                return psycopg2.connect(DATABASE_URL)
+            except Exception as e2:
+                print(f"❌ Direct connection also failed: {e2}")
+                raise
     else:
         return psycopg2.connect(DATABASE_URL)
 
