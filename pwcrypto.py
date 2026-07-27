@@ -1115,11 +1115,11 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_active_deal_to_db(trade_id, active_deals[trade_id])
         
         buyer_info = info.get("buyer_display") or f"{info['buyer']}"
-        if not info.get("buyer_display") and buyer_id:
+        if buyer_id:
             buyer_info += f" [{buyer_id}]"
 
         seller_info = info.get("seller_display") or f"{info['seller']}"
-        if not info.get("seller_display") and seller_id:
+        if seller_id:
             seller_info += f" [{seller_id}]"
 
         msg = (
@@ -1188,12 +1188,12 @@ async def fee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
     buyer_id = deal.get('buyer_id')
-    if not deal.get('buyer_display') and buyer_id:
+    if buyer_id:
         buyer_info += f" [{buyer_id}]"
 
     seller_info = deal.get('seller_display') or f"{deal['seller']}"
     seller_id = deal.get('seller_id')
-    if not deal.get('seller_display') and seller_id:
+    if seller_id:
         seller_info += f" [{seller_id}]"
 
     msg = (
@@ -1263,11 +1263,11 @@ async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
-    if not deal.get('buyer_display') and deal.get('buyer_id'):
+    if deal.get('buyer_id'):
         buyer_info += f" [{deal['buyer_id']}]"
 
     seller_info = deal.get('seller_display') or f"{deal['seller']}"
-    if not deal.get('seller_display') and deal.get('seller_id'):
+    if deal.get('seller_id'):
         seller_info += f" [{deal['seller_id']}]"
 
     buyer_vouch = deal.get('buyer_display') or f"{deal['buyer']}"
@@ -1380,11 +1380,11 @@ async def refund_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
-    if not deal.get('buyer_display') and deal.get('buyer_id'):
+    if deal.get('buyer_id'):
         buyer_info += f" [{deal['buyer_id']}]"
 
     seller_info = deal.get('seller_display') or f"{deal['seller']}"
-    if not deal.get('seller_display') and deal.get('seller_id'):
+    if deal.get('seller_id'):
         seller_info += f" [{deal['seller_id']}]"
 
     msg = (
