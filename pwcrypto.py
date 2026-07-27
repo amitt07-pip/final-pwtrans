@@ -1557,15 +1557,20 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             deal_amount = deal.get('deal_amount', 0)
             ongoing_volume += float(deal_amount) if deal_amount else 0.0
     
-    # Fetch manual stats and add on top of calculated stats
+    # Fetch manual stats and use them as exact values if present, otherwise use calculated stats
     manual = fetch_manual_stats(target_username_lower)
-    manual_volume = float(manual['total_volume']) if manual and manual.get('total_volume') else 0.0
-    manual_deals = int(manual['completed_deals']) if manual and manual.get('completed_deals') else 0
-    manual_highest = float(manual['highest_deal']) if manual and manual.get('highest_deal') else 0.0
-    
-    combined_volume = stats['total_volume'] + manual_volume + ongoing_volume
-    combined_deals = stats['total_deals'] + manual_deals
-    combined_highest = max(stats['highest_deal'], manual_highest)
+    manual_volume = float(manual['total_volume']) if manual and manual.get('total_volume') else None
+    manual_deals = int(manual['completed_deals']) if manual and manual.get('completed_deals') else None
+    manual_highest = float(manual['highest_deal']) if manual and manual.get('highest_deal') else None
+
+    if manual_volume is not None:
+        combined_volume = manual_volume
+        combined_deals = manual_deals if manual_deals is not None else 0
+        combined_highest = manual_highest if manual_highest is not None else 0.0
+    else:
+        combined_volume = stats['total_volume'] + ongoing_volume
+        combined_deals = stats['total_deals']
+        combined_highest = stats['highest_deal']
     
     # Format message
     ranking_display = f"#{stats['ranking']}" if stats['ranking'] != "N/A" else "N/A"
