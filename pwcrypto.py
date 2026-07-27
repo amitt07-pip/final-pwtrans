@@ -206,7 +206,7 @@ def ensure_tables_exist():
 
         cur.execute("ALTER TABLE deal_history ADD COLUMN IF NOT EXISTS buyer_display TEXT")
         cur.execute("ALTER TABLE deal_history ADD COLUMN IF NOT EXISTS seller_display TEXT")
-        
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS manual_stats (
                 username TEXT PRIMARY KEY,
@@ -214,9 +214,11 @@ def ensure_tables_exist():
                 total_volume NUMERIC DEFAULT 0,
                 completed_deals INTEGER DEFAULT 0,
                 highest_deal NUMERIC DEFAULT 0,
+                ranking TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        cur.execute("ALTER TABLE manual_stats ADD COLUMN IF NOT EXISTS ranking TEXT")
         
         conn.commit()
         cur.close()
@@ -244,7 +246,7 @@ def load_manual_stats_json():
         print(f"⚠️ Error loading manual stats JSON: {e}")
     return {}
 
-def save_manual_stats_json(username, user_id, total_volume, completed_deals, highest_deal):
+def save_manual_stats_json(username, user_id, total_volume, completed_deals, highest_deal, ranking=None):
     """Save manual stats to JSON file as fallback."""
     try:
         all_stats = load_manual_stats_json()
@@ -253,7 +255,8 @@ def save_manual_stats_json(username, user_id, total_volume, completed_deals, hig
             "user_id": str(user_id) if user_id else None,
             "total_volume": total_volume,
             "completed_deals": completed_deals,
-            "highest_deal": highest_deal
+            "highest_deal": highest_deal,
+            "ranking": ranking
         }
         with open(MANUAL_STATS_FILE, 'w') as f:
             json.dump(all_stats, f, indent=2)
@@ -263,7 +266,7 @@ def save_manual_stats_json(username, user_id, total_volume, completed_deals, hig
         print(f"⚠️ Error saving manual stats to JSON: {e}")
         return False
 
-def save_manual_stats(username, user_id, total_volume, completed_deals, highest_deal):
+def save_manual_stats(username, user_id, total_volume, completed_deals, highest_deal, ranking=None):
     """Save or update manual stats for a user. Falls back to JSON if DB fails."""
     conn = None
     db_error = None
@@ -278,19 +281,21 @@ def save_manual_stats(username, user_id, total_volume, completed_deals, highest_
                 total_volume NUMERIC DEFAULT 0,
                 completed_deals INTEGER DEFAULT 0,
                 highest_deal NUMERIC DEFAULT 0,
+                ranking TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         cur.execute("""
-            INSERT INTO manual_stats (username, user_id, total_volume, completed_deals, highest_deal, updated_at)
-            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            INSERT INTO manual_stats (username, user_id, total_volume, completed_deals, highest_deal, ranking, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT (username) DO UPDATE SET
                 user_id = COALESCE(EXCLUDED.user_id, manual_stats.user_id),
                 total_volume = EXCLUDED.total_volume,
                 completed_deals = EXCLUDED.completed_deals,
                 highest_deal = EXCLUDED.highest_deal,
+                ranking = COALESCE(EXCLUDED.ranking, manual_stats.ranking),
                 updated_at = CURRENT_TIMESTAMP
-        """, (username.lower(), str(user_id) if user_id else None, total_volume, completed_deals, highest_deal))
+        """, (username.lower(), str(user_id) if user_id else None, total_volume, completed_deals, highest_deal, ranking))
         conn.commit()
         cur.close()
         print(f"💾 Saved manual stats for {username}")
@@ -304,7 +309,7 @@ def save_manual_stats(username, user_id, total_volume, completed_deals, highest_
             except:
                 pass
         # Fallback to JSON
-        json_ok = save_manual_stats_json(username, user_id, total_volume, completed_deals, highest_deal)
+        json_ok = save_manual_stats_json(username, user_id, total_volume, completed_deals, highest_deal, ranking)
         if json_ok:
             return True, "saved_to_json"
         return False, db_error
@@ -373,12 +378,13 @@ async def _try_process_full_stats_message(update: Update, context: ContextTypes.
     volume = parsed['total_volume']
     deals = parsed['completed_deals']
     highest = parsed['highest_deal']
+    ranking = parsed.get('ranking')
 
-    success, error_info = save_manual_stats(username, user_id, volume, deals, highest)
+    success, error_info = save_manual_stats(username, user_id, volume, deals, highest, ranking)
 
     if success:
         note = " (saved to local file - DB unavailable)" if error_info == "saved_to_json" else ""
-        ranking_line = f"👑 Ranking: #{parsed['ranking']}\n" if parsed.get('ranking') and parsed['ranking'].upper() != 'N/A' else ""
+        ranking_line = f"👑 Ranking: #{ranking}\n" if ranking and ranking.upper() != 'N/A' else ""
         ongoing_line = f"⏳ Ongoing Deals: {parsed['ongoing_deals']}\n" if parsed.get('ongoing_deals') is not None else ""
         await update.message.reply_text(
             f"✅ Stats updated for {username}{note}\n\n"
@@ -1562,6 +1568,7 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     manual_volume = float(manual['total_volume']) if manual and manual.get('total_volume') else None
     manual_deals = int(manual['completed_deals']) if manual and manual.get('completed_deals') else None
     manual_highest = float(manual['highest_deal']) if manual and manual.get('highest_deal') else None
+    manual_ranking = manual.get('ranking') if manual else None
 
     if manual_volume is not None:
         combined_volume = manual_volume
@@ -1571,9 +1578,13 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         combined_volume = stats['total_volume'] + ongoing_volume
         combined_deals = stats['total_deals']
         combined_highest = stats['highest_deal']
-    
-    # Format message
-    ranking_display = f"#{stats['ranking']}" if stats['ranking'] != "N/A" else "N/A"
+
+    # Use manual ranking if saved, otherwise use calculated ranking
+    ranking_value = manual_ranking if manual_ranking else stats['ranking']
+    if ranking_value and str(ranking_value).upper() != "N/A":
+        ranking_display = f"#{ranking_value}"
+    else:
+        ranking_display = "N/A"
     
     # Escape Markdown special characters in username
     username_escaped = escape_markdown(target_username)
@@ -1823,7 +1834,8 @@ async def addstat_highest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     volume = context.user_data.get('addstat_volume')
     deals = context.user_data.get('addstat_deals')
 
-    success, error_info = save_manual_stats(username, user_id, volume, deals, highest)
+    ranking = None
+    success, error_info = save_manual_stats(username, user_id, volume, deals, highest, ranking)
 
     if success:
         note = " (saved to local file - DB unavailable)" if error_info == "saved_to_json" else ""
