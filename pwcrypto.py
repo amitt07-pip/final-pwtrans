@@ -844,20 +844,37 @@ async def try_get_user_id(context, chat_id, username):
         print(f"Could not resolve username {username}: {e}")
         return None
 
-def parse_deal_text(text, entities=None):
+def parse_deal_text(text, entities=None, sender_user=None):
     """Extract deal info from the format message."""
-    # Try to extract username and optional user ID from text
-    buyer_match = re.search(r"BUYER\s*:\s*(@\w+)(?:\s*[\[\(]?(\d+)[\]\)]?)?", text, re.IGNORECASE)
-    seller_match = re.search(r"SELLER\s*:\s*(@\w+)(?:\s*[\[\(]?(\d+)[\]\)]?)?", text, re.IGNORECASE)
+    # Try to extract username or a case-sensitive "Me" self-reference and optional user ID from text
+    buyer_match = re.search(r"BUYER\s*:\s*(@\w+|Me)(?:\s*[\[\(]?(\d+)[\]\)]?)?", text, re.IGNORECASE)
+    seller_match = re.search(r"SELLER\s*:\s*(@\w+|Me)(?:\s*[\[\(]?(\d+)[\]\)]?)?", text, re.IGNORECASE)
     amount = re.search(r"DEAL AMOUNT\s*:\s*\$?([\d.]+)", text, re.IGNORECASE)
-    
+
     buyer_username = buyer_match.group(1) if buyer_match else None
     seller_username = seller_match.group(1) if seller_match else None
-    
+
     # First try to get IDs from text (manually written)
     buyer_id = buyer_match.group(2) if buyer_match and buyer_match.group(2) else None
     seller_id = seller_match.group(2) if seller_match and seller_match.group(2) else None
-    
+
+    # Resolve case-sensitive "Me" (or "@Me") to the form sender's username/ID
+    def resolve_me(value):
+        if value and value.lstrip('@') == "Me" and sender_user:
+            return (
+                f"@{sender_user.username}" if sender_user.username else f"ID:{sender_user.id}",
+                str(sender_user.id)
+            )
+        return value, None
+
+    buyer_username, me_buyer_id = resolve_me(buyer_username)
+    if me_buyer_id:
+        buyer_id = me_buyer_id
+
+    seller_username, me_seller_id = resolve_me(seller_username)
+    if me_seller_id:
+        seller_id = me_seller_id
+
     # If not found in text, try to extract from message entities (text_mention type)
     if entities and (not buyer_id or not seller_id):
         for entity in entities:
@@ -865,14 +882,14 @@ def parse_deal_text(text, entities=None):
                 # This is when user is mentioned using the dropdown (provides user object)
                 user_id = str(entity.user.id)
                 offset = entity.offset
-                
+
                 # Check if this mention is near "BUYER" or "SELLER"
                 context = text[max(0, offset-20):offset+20].upper()
                 if "BUYER" in context and not buyer_id:
                     buyer_id = user_id
                 elif "SELLER" in context and not seller_id:
                     seller_id = user_id
-    
+
     return {
         "buyer": buyer_username,
         "buyer_id": buyer_id,
@@ -900,7 +917,8 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     deal_text = update.message.reply_to_message.text
     entities = update.message.reply_to_message.entities
-    info = parse_deal_text(deal_text, entities)
+    sender_user = update.message.reply_to_message.from_user
+    info = parse_deal_text(deal_text, entities, sender_user)
 
     if not info["buyer"] or not info["seller"] or not info["amount"]:
         await update.message.reply_text("❌ Could not parse deal details. Make sure your message matches this format:\n\n"
