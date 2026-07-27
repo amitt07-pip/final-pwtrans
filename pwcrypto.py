@@ -929,17 +929,19 @@ async def try_get_user_id(context, chat_id, username):
         return None
 
 def _user_mention_html(user):
-    """Build an HTML mention string for a Telegram user object."""
+    """Build a clickable HTML mention for a Telegram user object."""
     if not user:
         return None
     if user.username:
-        return f"@{user.username}"
-    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    if not full_name:
-        full_name = "User"
+        display = f"@{user.username}"
     else:
-        full_name = html.escape(full_name)
-    return f'<a href="tg://user?id={user.id}">{full_name}</a>'
+        full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+        if not full_name:
+            full_name = "User"
+        else:
+            full_name = html.escape(full_name)
+        display = full_name
+    return f'<a href="tg://user?id={user.id}">{display}</a>'
 
 def parse_deal_text(text, entities=None, sender_user=None):
     """Extract deal info from the format message."""
@@ -1113,11 +1115,11 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_active_deal_to_db(trade_id, active_deals[trade_id])
         
         buyer_info = info.get("buyer_display") or f"{info['buyer']}"
-        if buyer_id:
+        if not info.get("buyer_display") and buyer_id:
             buyer_info += f" [{buyer_id}]"
 
         seller_info = info.get("seller_display") or f"{info['seller']}"
-        if seller_id:
+        if not info.get("seller_display") and seller_id:
             seller_info += f" [{seller_id}]"
 
         msg = (
@@ -1186,12 +1188,12 @@ async def fee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
     buyer_id = deal.get('buyer_id')
-    if buyer_id:
+    if not deal.get('buyer_display') and buyer_id:
         buyer_info += f" [{buyer_id}]"
 
     seller_info = deal.get('seller_display') or f"{deal['seller']}"
     seller_id = deal.get('seller_id')
-    if seller_id:
+    if not deal.get('seller_display') and seller_id:
         seller_info += f" [{seller_id}]"
 
     msg = (
@@ -1261,11 +1263,11 @@ async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
-    if deal.get('buyer_id'):
+    if not deal.get('buyer_display') and deal.get('buyer_id'):
         buyer_info += f" [{deal['buyer_id']}]"
 
     seller_info = deal.get('seller_display') or f"{deal['seller']}"
-    if deal.get('seller_id'):
+    if not deal.get('seller_display') and deal.get('seller_id'):
         seller_info += f" [{deal['seller_id']}]"
 
     buyer_vouch = deal.get('buyer_display') or f"{deal['buyer']}"
@@ -1378,11 +1380,11 @@ async def refund_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
-    if deal.get('buyer_id'):
+    if not deal.get('buyer_display') and deal.get('buyer_id'):
         buyer_info += f" [{deal['buyer_id']}]"
 
     seller_info = deal.get('seller_display') or f"{deal['seller']}"
-    if deal.get('seller_id'):
+    if not deal.get('seller_display') and deal.get('seller_id'):
         seller_info += f" [{deal['seller_id']}]"
 
     msg = (
