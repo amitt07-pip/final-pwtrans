@@ -1263,12 +1263,7 @@ async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
-    if deal.get('buyer_id'):
-        buyer_info += f" [{deal['buyer_id']}]"
-
     seller_info = deal.get('seller_display') or f"{deal['seller']}"
-    if deal.get('seller_id'):
-        seller_info += f" [{deal['seller_id']}]"
 
     buyer_vouch = deal.get('buyer_display') or f"{deal['buyer']}"
     seller_vouch = deal.get('seller_display') or f"{deal['seller']}"
