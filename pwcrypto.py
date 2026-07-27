@@ -958,14 +958,16 @@ def parse_deal_text(text, entities=None, sender_user=None):
     buyer_display = None
     seller_display = None
 
-    # Resolve case-sensitive "Me" (or "@Me") to the form sender's username/ID
+    # Resolve "Me" / "me" / "ME" self-references (case-insensitive except real @me username)
     def resolve_me(value):
-        if value and value.lstrip('@') == "Me" and sender_user:
-            return (
-                f"@{sender_user.username}" if sender_user.username else f"ID:{sender_user.id}",
-                str(sender_user.id),
-                _user_mention_html(sender_user)
-            )
+        if value and sender_user:
+            clean = value.lstrip('@')
+            if clean.lower() == "me" and not (value.startswith('@') and clean == 'me'):
+                return (
+                    f"@{sender_user.username}" if sender_user.username else f"ID:{sender_user.id}",
+                    str(sender_user.id),
+                    _user_mention_html(sender_user)
+                )
         return value, None, None
 
     buyer_username, me_buyer_id, buyer_display = resolve_me(buyer_username)
