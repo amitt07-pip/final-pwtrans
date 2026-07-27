@@ -333,6 +333,70 @@ def fetch_manual_stats(username_lower):
     all_stats = load_manual_stats_json()
     return all_stats.get(username_lower)
 
+def parse_stats_message(text):
+    """Parse a full stats-formatted message into a dict of values."""
+    result = {}
+
+    total_volume_match = re.search(r"Total\s*Volume\s*[:=]?\s*\$?([\d,]+\.?\d*)", text, re.IGNORECASE)
+    if total_volume_match:
+        result['total_volume'] = float(total_volume_match.group(1).replace(',', ''))
+
+    completed_deals_match = re.search(r"Completed\s*Deals\s*[:=]?\s*(\d+)", text, re.IGNORECASE)
+    if completed_deals_match:
+        result['completed_deals'] = int(completed_deals_match.group(1))
+
+    highest_deal_match = re.search(r"Highest\s*Deal\s*[:=]?\s*\$?([\d,]+\.?\d*)", text, re.IGNORECASE)
+    if highest_deal_match:
+        result['highest_deal'] = float(highest_deal_match.group(1).replace(',', ''))
+
+    ranking_match = re.search(r"Ranking\s*[:=]?\s*#?(\d+|N/A)", text, re.IGNORECASE)
+    if ranking_match:
+        result['ranking'] = ranking_match.group(1)
+
+    ongoing_deals_match = re.search(r"Ongoing\s*Deals\s*[:=]?\s*(\d+)", text, re.IGNORECASE)
+    if ongoing_deals_match:
+        result['ongoing_deals'] = int(ongoing_deals_match.group(1))
+
+    return result
+
+async def _try_process_full_stats_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """If the message is a full stats format, save all parsed values and end the conversation."""
+    text = update.message.text or ''
+    parsed = parse_stats_message(text)
+
+    # Only treat as a full stats message if it contains the three main saveable values
+    if not (parsed.get('total_volume') is not None and parsed.get('completed_deals') is not None and parsed.get('highest_deal') is not None):
+        return False
+
+    username = context.user_data.get('addstat_username')
+    user_id = context.user_data.get('addstat_user_id')
+    volume = parsed['total_volume']
+    deals = parsed['completed_deals']
+    highest = parsed['highest_deal']
+
+    success, error_info = save_manual_stats(username, user_id, volume, deals, highest)
+
+    if success:
+        note = " (saved to local file - DB unavailable)" if error_info == "saved_to_json" else ""
+        ranking_line = f"👑 Ranking: #{parsed['ranking']}\n" if parsed.get('ranking') and parsed['ranking'].upper() != 'N/A' else ""
+        ongoing_line = f"⏳ Ongoing Deals: {parsed['ongoing_deals']}\n" if parsed.get('ongoing_deals') is not None else ""
+        await update.message.reply_text(
+            f"✅ Stats updated for {username}{note}\n\n"
+            f"{ranking_line}"
+            f"📈 Total Volume: ${volume:,.2f}\n"
+            f"🔢 Completed Deals: {deals}\n"
+            f"{ongoing_line}"
+            f"⚡ Highest Deal: ${highest:,.2f}"
+        )
+    else:
+        await update.message.reply_text(f"❌ Failed to save stats.\nError: {error_info}")
+
+    # Clean up user_data
+    for key in ['addstat_username', 'addstat_user_id', 'addstat_volume', 'addstat_deals']:
+        context.user_data.pop(key, None)
+
+    return True
+
 def get_db_connection():
     """Get a database connection from the pool with health check."""
     global db_pool
@@ -1711,6 +1775,9 @@ async def addstat_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def addstat_volume(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Receive Total Volume and ask for Completed Deals."""
+    if await _try_process_full_stats_message(update, context):
+        return ConversationHandler.END
+
     try:
         volume = float(update.message.text.strip().replace('$', '').replace(',', ''))
     except ValueError:
@@ -1723,6 +1790,9 @@ async def addstat_volume(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def addstat_deals(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Receive Completed Deals and ask for Highest Deal."""
+    if await _try_process_full_stats_message(update, context):
+        return ConversationHandler.END
+
     try:
         deals = int(update.message.text.strip())
     except ValueError:
@@ -1735,6 +1805,9 @@ async def addstat_deals(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def addstat_highest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Receive Highest Deal and save all stats."""
+    if await _try_process_full_stats_message(update, context):
+        return ConversationHandler.END
+
     try:
         highest = float(update.message.text.strip().replace('$', '').replace(',', ''))
     except ValueError:
