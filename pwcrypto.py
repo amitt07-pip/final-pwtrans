@@ -4,8 +4,8 @@ if sys.version_info >= (3, 13):
     sys.modules["imghdr"] = types.ModuleType("imghdr")
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
-import re, random, string, os, json
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, ConversationHandler, MessageHandler, filters
+import re, random, string, os, json, html
 from datetime import datetime
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
@@ -143,12 +143,268 @@ def initialize_db_pool():
             dsn=DATABASE_URL
         )
         print("✅ Database connection pool initialized (2-10 connections)")
+        ensure_tables_exist()
     except Exception as e:
         print(f"❌ Failed to initialize database pool: {e}")
         db_pool = None
 
+def ensure_tables_exist():
+    """Create required tables if they don't exist."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS active_deals (
+                trade_id TEXT PRIMARY KEY,
+                buyer TEXT,
+                buyer_id TEXT,
+                buyer_display TEXT,
+                seller TEXT,
+                seller_id TEXT,
+                seller_display TEXT,
+                deal_amount NUMERIC,
+                received_amount NUMERIC,
+                fee_percent NUMERIC,
+                fee_amount NUMERIC,
+                release_amount NUMERIC,
+                escrow_admin TEXT,
+                escrow_admin_name TEXT,
+                escrow_admin_id BIGINT,
+                source_message_id BIGINT,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cur.execute("ALTER TABLE active_deals ADD COLUMN IF NOT EXISTS buyer_display TEXT")
+        cur.execute("ALTER TABLE active_deals ADD COLUMN IF NOT EXISTS seller_display TEXT")
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS deal_history (
+                id SERIAL PRIMARY KEY,
+                trade_id TEXT,
+                buyer TEXT,
+                buyer_id TEXT,
+                buyer_display TEXT,
+                seller TEXT,
+                seller_id TEXT,
+                seller_display TEXT,
+                deal_amount NUMERIC,
+                received_amount NUMERIC,
+                fee_amount NUMERIC,
+                release_amount NUMERIC,
+                escrow_admin TEXT,
+                escrow_admin_id TEXT,
+                escrow_admin_name TEXT,
+                status TEXT,
+                created_at TIMESTAMP,
+                completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cur.execute("ALTER TABLE deal_history ADD COLUMN IF NOT EXISTS buyer_display TEXT")
+        cur.execute("ALTER TABLE deal_history ADD COLUMN IF NOT EXISTS seller_display TEXT")
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS manual_stats (
+                username TEXT PRIMARY KEY,
+                user_id TEXT,
+                total_volume NUMERIC DEFAULT 0,
+                completed_deals INTEGER DEFAULT 0,
+                highest_deal NUMERIC DEFAULT 0,
+                ranking TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("ALTER TABLE manual_stats ADD COLUMN IF NOT EXISTS ranking TEXT")
+        
+        conn.commit()
+        cur.close()
+        print("✅ Database tables verified/created")
+    except Exception as e:
+        print(f"⚠️ Error ensuring tables exist: {e}")
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+MANUAL_STATS_FILE = "manual_stats.json"
+
+def load_manual_stats_json():
+    """Load manual stats from JSON file."""
+    try:
+        if os.path.exists(MANUAL_STATS_FILE):
+            with open(MANUAL_STATS_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"⚠️ Error loading manual stats JSON: {e}")
+    return {}
+
+def save_manual_stats_json(username, user_id, total_volume, completed_deals, highest_deal, ranking=None):
+    """Save manual stats to JSON file as fallback."""
+    try:
+        all_stats = load_manual_stats_json()
+        all_stats[username.lower()] = {
+            "username": username.lower(),
+            "user_id": str(user_id) if user_id else None,
+            "total_volume": total_volume,
+            "completed_deals": completed_deals,
+            "highest_deal": highest_deal,
+            "ranking": ranking
+        }
+        with open(MANUAL_STATS_FILE, 'w') as f:
+            json.dump(all_stats, f, indent=2)
+        print(f"💾 Saved manual stats for {username} to JSON")
+        return True
+    except Exception as e:
+        print(f"⚠️ Error saving manual stats to JSON: {e}")
+        return False
+
+def save_manual_stats(username, user_id, total_volume, completed_deals, highest_deal, ranking=None):
+    """Save or update manual stats for a user. Falls back to JSON if DB fails."""
+    conn = None
+    db_error = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        # Ensure table exists before inserting
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS manual_stats (
+                username TEXT PRIMARY KEY,
+                user_id TEXT,
+                total_volume NUMERIC DEFAULT 0,
+                completed_deals INTEGER DEFAULT 0,
+                highest_deal NUMERIC DEFAULT 0,
+                ranking TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("""
+            INSERT INTO manual_stats (username, user_id, total_volume, completed_deals, highest_deal, ranking, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (username) DO UPDATE SET
+                user_id = COALESCE(EXCLUDED.user_id, manual_stats.user_id),
+                total_volume = EXCLUDED.total_volume,
+                completed_deals = EXCLUDED.completed_deals,
+                highest_deal = EXCLUDED.highest_deal,
+                ranking = COALESCE(EXCLUDED.ranking, manual_stats.ranking),
+                updated_at = CURRENT_TIMESTAMP
+        """, (username.lower(), str(user_id) if user_id else None, total_volume, completed_deals, highest_deal, ranking))
+        conn.commit()
+        cur.close()
+        print(f"💾 Saved manual stats for {username}")
+        return True, None
+    except Exception as e:
+        db_error = str(e)
+        print(f"⚠️ Error saving manual stats to DB: {e}")
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
+        # Fallback to JSON
+        json_ok = save_manual_stats_json(username, user_id, total_volume, completed_deals, highest_deal, ranking)
+        if json_ok:
+            return True, "saved_to_json"
+        return False, db_error
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+def fetch_manual_stats(username_lower):
+    """Fetch manual stats for a user. Falls back to JSON if DB fails."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM manual_stats WHERE username = %s", (username_lower,))
+        result = cur.fetchone()
+        cur.close()
+        if result:
+            return result
+    except Exception as e:
+        print(f"⚠️ Error fetching manual stats from DB: {e}")
+    finally:
+        if conn:
+            return_db_connection(conn)
+    
+    # Fallback to JSON
+    all_stats = load_manual_stats_json()
+    return all_stats.get(username_lower)
+
+def parse_stats_message(text):
+    """Parse a full stats-formatted message into a dict of values."""
+    result = {}
+
+    total_volume_match = re.search(r"Total\s*Volume\s*[:=]?\s*\$?([\d,]+\.?\d*)", text, re.IGNORECASE)
+    if total_volume_match:
+        result['total_volume'] = float(total_volume_match.group(1).replace(',', ''))
+
+    completed_deals_match = re.search(r"Completed\s*Deals\s*[:=]?\s*(\d+)", text, re.IGNORECASE)
+    if completed_deals_match:
+        result['completed_deals'] = int(completed_deals_match.group(1))
+
+    highest_deal_match = re.search(r"Highest\s*Deal\s*[:=]?\s*\$?([\d,]+\.?\d*)", text, re.IGNORECASE)
+    if highest_deal_match:
+        result['highest_deal'] = float(highest_deal_match.group(1).replace(',', ''))
+
+    ranking_match = re.search(r"Ranking\s*[:=]?\s*#?(\d+|N/A)", text, re.IGNORECASE)
+    if ranking_match:
+        result['ranking'] = ranking_match.group(1)
+
+    ongoing_deals_match = re.search(r"Ongoing\s*Deals\s*[:=]?\s*(\d+)", text, re.IGNORECASE)
+    if ongoing_deals_match:
+        result['ongoing_deals'] = int(ongoing_deals_match.group(1))
+
+    return result
+
+async def _try_process_full_stats_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """If the message is a full stats format, save all parsed values and end the conversation."""
+    text = update.message.text or ''
+    parsed = parse_stats_message(text)
+
+    # Only treat as a full stats message if it contains the three main saveable values
+    if not (parsed.get('total_volume') is not None and parsed.get('completed_deals') is not None and parsed.get('highest_deal') is not None):
+        return False
+
+    username = context.user_data.get('addstat_username')
+    user_id = context.user_data.get('addstat_user_id')
+    volume = parsed['total_volume']
+    deals = parsed['completed_deals']
+    highest = parsed['highest_deal']
+    ranking = parsed.get('ranking')
+
+    success, error_info = save_manual_stats(username, user_id, volume, deals, highest, ranking)
+
+    if success:
+        note = " (saved to local file - DB unavailable)" if error_info == "saved_to_json" else ""
+        ranking_line = f"👑 Ranking: #{ranking}\n" if ranking and ranking.upper() != 'N/A' else ""
+        ongoing_line = f"⏳ Ongoing Deals: {parsed['ongoing_deals']}\n" if parsed.get('ongoing_deals') is not None else ""
+        await update.message.reply_text(
+            f"✅ Stats updated for {username}{note}\n\n"
+            f"{ranking_line}"
+            f"📈 Total Volume: ${volume:,.2f}\n"
+            f"🔢 Completed Deals: {deals}\n"
+            f"{ongoing_line}"
+            f"⚡ Highest Deal: ${highest:,.2f}"
+        )
+    else:
+        await update.message.reply_text(f"❌ Failed to save stats.\nError: {error_info}")
+
+    # Clean up user_data
+    for key in ['addstat_username', 'addstat_user_id', 'addstat_volume', 'addstat_deals']:
+        context.user_data.pop(key, None)
+
+    return True
+
 def get_db_connection():
-    """Get a database connection from the pool."""
+    """Get a database connection from the pool with health check."""
     global db_pool
     
     if db_pool is None:
@@ -156,10 +412,32 @@ def get_db_connection():
     
     if db_pool:
         try:
-            return db_pool.getconn()
+            conn = db_pool.getconn()
+            # Health check: test if connection is still alive
+            if conn.closed:
+                print("⚠️ Pool returned a closed connection, getting fresh one...")
+                db_pool.putconn(conn, close=True)
+                conn = db_pool.getconn()
+            else:
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT 1")
+                    cur.close()
+                except Exception:
+                    print("⚠️ Pool connection stale, reconnecting...")
+                    try:
+                        db_pool.putconn(conn, close=True)
+                    except:
+                        pass
+                    conn = psycopg2.connect(DATABASE_URL)
+            return conn
         except Exception as e:
             print(f"⚠️ Error getting connection from pool: {e}")
-            return psycopg2.connect(DATABASE_URL)
+            try:
+                return psycopg2.connect(DATABASE_URL)
+            except Exception as e2:
+                print(f"❌ Direct connection also failed: {e2}")
+                raise
     else:
         return psycopg2.connect(DATABASE_URL)
 
@@ -202,8 +480,10 @@ def load_active_deals_from_db():
             active_deals[trade_id] = {
                 'buyer': row['buyer'],
                 'buyer_id': row['buyer_id'],
+                'buyer_display': row.get('buyer_display'),
                 'seller': row['seller'],
                 'seller_id': row['seller_id'],
+                'seller_display': row.get('seller_display'),
                 'deal_amount': float(row['deal_amount']) if row['deal_amount'] else 0,
                 'received_amount': float(row['received_amount']) if row['received_amount'] else 0,
                 'fee_percent': float(row['fee_percent']) if row['fee_percent'] else None,
@@ -234,16 +514,18 @@ def save_active_deal_to_db(trade_id, deal_data):
         
         cur.execute("""
             INSERT INTO active_deals (
-                trade_id, buyer, buyer_id, seller, seller_id,
+                trade_id, buyer, buyer_id, buyer_display, seller, seller_id, seller_display,
                 deal_amount, received_amount, fee_percent, fee_amount, release_amount,
                 escrow_admin, escrow_admin_name, escrow_admin_id,
                 source_message_id, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (trade_id) DO UPDATE SET
                 buyer = EXCLUDED.buyer,
                 buyer_id = EXCLUDED.buyer_id,
+                buyer_display = EXCLUDED.buyer_display,
                 seller = EXCLUDED.seller,
                 seller_id = EXCLUDED.seller_id,
+                seller_display = EXCLUDED.seller_display,
                 deal_amount = EXCLUDED.deal_amount,
                 received_amount = EXCLUDED.received_amount,
                 fee_percent = EXCLUDED.fee_percent,
@@ -255,8 +537,10 @@ def save_active_deal_to_db(trade_id, deal_data):
             trade_id,
             deal_data['buyer'],
             deal_data.get('buyer_id'),
+            deal_data.get('buyer_display'),
             deal_data['seller'],
             deal_data.get('seller_id'),
+            deal_data.get('seller_display'),
             deal_data['deal_amount'],
             deal_data['received_amount'],
             deal_data.get('fee_percent'),
@@ -303,17 +587,19 @@ def save_deal_to_history_db(deal_data):
         
         cur.execute("""
             INSERT INTO deal_history (
-                trade_id, buyer, buyer_id, seller, seller_id,
+                trade_id, buyer, buyer_id, buyer_display, seller, seller_id, seller_display,
                 deal_amount, received_amount, fee_amount, release_amount,
                 escrow_admin, escrow_admin_id, escrow_admin_name,
                 status, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             deal_data['trade_id'],
             deal_data['buyer'],
             deal_data.get('buyer_id'),
+            deal_data.get('buyer_display'),
             deal_data['seller'],
             deal_data.get('seller_id'),
+            deal_data.get('seller_display'),
             deal_data['deal_amount'],
             deal_data.get('received_amount'),
             deal_data.get('fee_amount'),
@@ -349,17 +635,19 @@ def move_deal_to_history_db(trade_id, deal_data):
         # 1. Insert into history
         cur.execute("""
             INSERT INTO deal_history (
-                trade_id, buyer, buyer_id, seller, seller_id,
+                trade_id, buyer, buyer_id, buyer_display, seller, seller_id, seller_display,
                 deal_amount, received_amount, fee_amount, release_amount,
                 escrow_admin, escrow_admin_id, escrow_admin_name,
                 status, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             deal_data['trade_id'],
             deal_data['buyer'],
             deal_data.get('buyer_id'),
+            deal_data.get('buyer_display'),
             deal_data['seller'],
             deal_data.get('seller_id'),
+            deal_data.get('seller_display'),
             deal_data['deal_amount'],
             deal_data.get('received_amount'),
             deal_data.get('fee_amount'),
@@ -646,20 +934,58 @@ async def try_get_user_id(context, chat_id, username):
         print(f"Could not resolve username {username}: {e}")
         return None
 
-def parse_deal_text(text, entities=None):
+def _user_mention_html(user):
+    """Build a clickable HTML mention for a Telegram user object."""
+    if not user:
+        return None
+    if user.username:
+        display = f"@{user.username}"
+    else:
+        full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+        if not full_name:
+            full_name = "User"
+        else:
+            full_name = html.escape(full_name)
+        display = full_name
+    return f'<a href="tg://user?id={user.id}">{display}</a>'
+
+def parse_deal_text(text, entities=None, sender_user=None):
     """Extract deal info from the format message."""
-    # Try to extract username and optional user ID from text
-    buyer_match = re.search(r"BUYER\s*:\s*(@\w+)(?:\s*[\[\(]?(\d+)[\]\)]?)?", text, re.IGNORECASE)
-    seller_match = re.search(r"SELLER\s*:\s*(@\w+)(?:\s*[\[\(]?(\d+)[\]\)]?)?", text, re.IGNORECASE)
+    # Try to extract username or a case-sensitive "Me" self-reference and optional user ID from text
+    buyer_match = re.search(r"BUYER\s*:\s*(@\w+|Me)(?:\s*[\[\(]?(\d+)[\]\)]?)?", text, re.IGNORECASE)
+    seller_match = re.search(r"SELLER\s*:\s*(@\w+|Me)(?:\s*[\[\(]?(\d+)[\]\)]?)?", text, re.IGNORECASE)
     amount = re.search(r"DEAL AMOUNT\s*:\s*\$?([\d.]+)", text, re.IGNORECASE)
-    
+
     buyer_username = buyer_match.group(1) if buyer_match else None
     seller_username = seller_match.group(1) if seller_match else None
-    
+
     # First try to get IDs from text (manually written)
     buyer_id = buyer_match.group(2) if buyer_match and buyer_match.group(2) else None
     seller_id = seller_match.group(2) if seller_match and seller_match.group(2) else None
-    
+
+    buyer_display = None
+    seller_display = None
+
+    # Resolve "Me" / "me" / "ME" self-references (case-insensitive except real @me username)
+    def resolve_me(value):
+        if value and sender_user:
+            clean = value.lstrip('@')
+            if clean.lower() == "me" and not (value.startswith('@') and clean == 'me'):
+                return (
+                    f"@{sender_user.username}" if sender_user.username else f"ID:{sender_user.id}",
+                    str(sender_user.id),
+                    _user_mention_html(sender_user)
+                )
+        return value, None, None
+
+    buyer_username, me_buyer_id, buyer_display = resolve_me(buyer_username)
+    if me_buyer_id:
+        buyer_id = me_buyer_id
+
+    seller_username, me_seller_id, seller_display = resolve_me(seller_username)
+    if me_seller_id:
+        seller_id = me_seller_id
+
     # If not found in text, try to extract from message entities (text_mention type)
     if entities and (not buyer_id or not seller_id):
         for entity in entities:
@@ -667,19 +993,21 @@ def parse_deal_text(text, entities=None):
                 # This is when user is mentioned using the dropdown (provides user object)
                 user_id = str(entity.user.id)
                 offset = entity.offset
-                
+
                 # Check if this mention is near "BUYER" or "SELLER"
                 context = text[max(0, offset-20):offset+20].upper()
                 if "BUYER" in context and not buyer_id:
                     buyer_id = user_id
                 elif "SELLER" in context and not seller_id:
                     seller_id = user_id
-    
+
     return {
         "buyer": buyer_username,
         "buyer_id": buyer_id,
+        "buyer_display": buyer_display,
         "seller": seller_username,
         "seller_id": seller_id,
+        "seller_display": seller_display,
         "amount": float(amount.group(1)) if amount else None
     }
 
@@ -702,7 +1030,8 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     deal_text = update.message.reply_to_message.text
     entities = update.message.reply_to_message.entities
-    info = parse_deal_text(deal_text, entities)
+    sender_user = update.message.reply_to_message.from_user
+    info = parse_deal_text(deal_text, entities, sender_user)
 
     if not info["buyer"] or not info["seller"] or not info["amount"]:
         await update.message.reply_text("❌ Could not parse deal details. Make sure your message matches this format:\n\n"
@@ -728,8 +1057,10 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active_deals[trade_id] = {
         "buyer": info["buyer"],
         "buyer_id": info["buyer_id"],
+        "buyer_display": info.get("buyer_display"),
         "seller": info["seller"],
         "seller_id": info["seller_id"],
+        "seller_display": info.get("seller_display"),
         "deal_amount": info["amount"],
         "received_amount": received_amount,
         "escrow_admin": f"@{user.username}" if user.username else f"ID:{user.id}",
@@ -789,23 +1120,23 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Save deal to database
         save_active_deal_to_db(trade_id, active_deals[trade_id])
         
-        buyer_info = f"{info['buyer']}"
+        buyer_info = info.get("buyer_display") or f"{info['buyer']}"
         if buyer_id:
             buyer_info += f" [{buyer_id}]"
-        
-        seller_info = f"{info['seller']}"
+
+        seller_info = info.get("seller_display") or f"{info['seller']}"
         if seller_id:
             seller_info += f" [{seller_id}]"
-        
+
         msg = (
-            f"💰 <b>Deal Amount:</b> ${deal_amount:.2f}\n"
-            f"📤 <b>Received Amount:</b> ${received_amount:.2f}\n"
-            f"📤 <b>Release/Refund Amount:</b> ${release_amount:.2f} <b>[NFN]</b>\n"
-            f"🆔 <b>Trade ID:</b> {trade_id}\n\n"
+            f"<tg-emoji emoji-id='5987880246865565644'>💰</tg-emoji> <b>Deal Amount:</b> ${deal_amount:.2f}\n"
+            f"<tg-emoji emoji-id='5877307202888273539'>📤</tg-emoji> <b>Received Amount:</b> ${received_amount:.2f}\n"
+            f"<tg-emoji emoji-id='5967548335542767952'>📤</tg-emoji> <b>Release/Refund Amount:</b> ${release_amount:.2f}\n"
+            f"<tg-emoji emoji-id='5936017305585586269'>🆔</tg-emoji> <b>Trade ID:</b> {trade_id}\n\n"
             f"<b>Continue the Deal</b>\n"
             f"<b>Buyer:</b> {buyer_info}\n"
             f"<b>Seller:</b> {seller_info}\n\n"
-            f"🛡 <b>Escrowed By:</b> {active_deals[trade_id]['escrow_admin']}"
+            f"<tg-emoji emoji-id='5920052658743283381'>🛡</tg-emoji> <b>Escrowed By:</b> {active_deals[trade_id]['escrow_admin']}"
         )
         
         await update.message.reply_to_message.reply_text(msg, parse_mode="HTML")
@@ -820,7 +1151,7 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await update.message.reply_to_message.reply_text(
-            f"Festival offer is active, but one or both users do not have '@Escrow_PagaL' in their bio.\nPlease select a fee for this deal:",
+            "Please select a fee for this deal:",
             reply_markup=reply_markup
         )
     
@@ -861,25 +1192,25 @@ async def fee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Save deal to database
     save_active_deal_to_db(trade_id, deal)
 
-    buyer_info = f"{deal['buyer']}"
+    buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
     buyer_id = deal.get('buyer_id')
     if buyer_id:
         buyer_info += f" [{buyer_id}]"
-    
-    seller_info = f"{deal['seller']}"
+
+    seller_info = deal.get('seller_display') or f"{deal['seller']}"
     seller_id = deal.get('seller_id')
     if seller_id:
         seller_info += f" [{seller_id}]"
-    
+
     msg = (
-        f"💰 <b>Deal Amount:</b> ${deal_amount:.2f}\n"
-        f"📤 <b>Received Amount:</b> ${received_amount:.2f}\n"
-        f"📤 <b>Release/Refund Amount:</b> ${release_amount:.2f} <b>[NFN]</b>\n"
-        f"🆔 <b>Trade ID:</b> {trade_id}\n\n"
+        f"<tg-emoji emoji-id='5987880246865565644'>💰</tg-emoji> <b>Deal Amount:</b> ${deal_amount:.2f}\n"
+        f"<tg-emoji emoji-id='5877307202888273539'>📤</tg-emoji> <b>Received Amount:</b> ${received_amount:.2f}\n"
+        f"<tg-emoji emoji-id='5967548335542767952'>📤</tg-emoji> <b>Release/Refund Amount:</b> ${release_amount:.2f}\n"
+        f"<tg-emoji emoji-id='5936017305585586269'>🆔</tg-emoji> <b>Trade ID:</b> {trade_id}\n\n"
         f"<b>Continue the Deal</b>\n"
         f"<b>Buyer:</b> {buyer_info}\n"
         f"<b>Seller:</b> {seller_info}\n\n"
-        f"🛡 <b>Escrowed By:</b> {deal['escrow_admin']}"
+        f"<tg-emoji emoji-id='5920052658743283381'>🛡</tg-emoji> <b>Escrowed By:</b> {deal['escrow_admin']}"
     )
 
     await query.edit_message_text(msg, parse_mode="HTML")
@@ -937,17 +1268,22 @@ async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ No record found for this trade.")
         return
 
-    buyer_info = f"{deal['buyer']}"
-    seller_info = f"{deal['seller']}"
-    
+    buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
+    seller_info = deal.get('seller_display') or f"{deal['seller']}"
+
+    buyer_vouch = deal.get('buyer_display') or f"{deal['buyer']}"
+    seller_vouch = deal.get('seller_display') or f"{deal['seller']}"
+
     msg = (
-        f"✅ <b>Deal Completed</b>\n"
-        f"🆔 <b>Trade ID:</b> {trade_id}\n"
-        f"📤 <b>Released:</b> ${deal['release_amount']:.2f}\n"
-        f"ℹ️ <b>Total Released:</b> ${deal['release_amount']:.2f}\n\n"
-        f"<b>Buyer:</b> {buyer_info}\n"
-        f"<b>Seller:</b> {seller_info}\n\n"
-        f"🛡 <b>Escrowed By:</b> {deal['escrow_admin']}\n"
+        f"<tg-emoji emoji-id='5197474765387864959'>✅</tg-emoji> Deal Completed\n"
+        f"<tg-emoji emoji-id='5936017305585586269'>🆔</tg-emoji> Trade ID: {trade_id}\n"
+        f"<tg-emoji emoji-id='5879785854284599288'>📤</tg-emoji> Released: ${deal['release_amount']:.2f}\n"
+        f"<tg-emoji emoji-id='5879785854284599288'>ℹ️</tg-emoji> Total Released: ${deal['release_amount']:.2f}\n\n"
+        f"Buyer: {buyer_info}\n"
+        f"Seller: {seller_info}\n\n"
+        f"<tg-emoji emoji-id='5920052658743283381'>🛡</tg-emoji> Escrowed By: {deal['escrow_admin']}\n\n"
+        f"~ {seller_vouch} and {buyer_vouch} are requested to drop the vouch before leaving👇🏻\n\n"
+        f"<code>Vouch @PAGALWORLD for ${deal['deal_amount']:.2f} smooth escrow deal❤️</code>"
     )
 
     await update.message.reply_to_message.reply_text(msg, parse_mode="HTML")
@@ -957,8 +1293,10 @@ async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "trade_id": trade_id,
         "buyer": deal['buyer'],
         "buyer_id": deal.get('buyer_id'),
+        "buyer_display": deal.get('buyer_display'),
         "seller": deal['seller'],
         "seller_id": deal.get('seller_id'),
+        "seller_display": deal.get('seller_display'),
         "deal_amount": deal['deal_amount'],
         "received_amount": deal.get('received_amount', deal['deal_amount']),
         "fee_amount": deal.get('fee_amount', 0),
@@ -973,17 +1311,15 @@ async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Move deal to history in a transaction-safe manner
     db_success = move_deal_to_history_db(trade_id, history_entry)
     
-    # Only remove from memory if database operation succeeded
-    if db_success:
-        # Save to JSON history file (for backwards compatibility)
-        deal_history.append(history_entry)
-        save_history()
-        
-        # Remove from active deals memory
-        del active_deals[trade_id]
-    else:
-        # If database operation failed, notify admin but keep deal active
-        await update.message.reply_text("⚠️ Database error occurred. Deal remains active. Please try again or contact support.")
+    if not db_success:
+        print(f"⚠️ Transaction move failed for {trade_id}, attempting individual operations...")
+        save_deal_to_history_db(history_entry)
+        delete_active_deal_from_db(trade_id)
+    
+    # Always save to JSON history and remove from memory
+    deal_history.append(history_entry)
+    save_history()
+    del active_deals[trade_id]
     
     # Delete the /close command message
     try:
@@ -1044,9 +1380,14 @@ async def refund_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ No record found for this trade.")
         return
 
-    buyer_info = f"{deal['buyer']}"
-    seller_info = f"{deal['seller']}"
-    
+    buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
+    if deal.get('buyer_id'):
+        buyer_info += f" [{deal['buyer_id']}]"
+
+    seller_info = deal.get('seller_display') or f"{deal['seller']}"
+    if deal.get('seller_id'):
+        seller_info += f" [{deal['seller_id']}]"
+
     msg = (
         f"✅ <b>Deal Refunded</b>\n"
         f"🆔 <b>Trade ID:</b> {trade_id}\n"
@@ -1064,8 +1405,10 @@ async def refund_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "trade_id": trade_id,
         "buyer": deal['buyer'],
         "buyer_id": deal.get('buyer_id'),
+        "buyer_display": deal.get('buyer_display'),
         "seller": deal['seller'],
         "seller_id": deal.get('seller_id'),
+        "seller_display": deal.get('seller_display'),
         "deal_amount": deal['deal_amount'],
         "received_amount": deal.get('received_amount', deal['deal_amount']),
         "fee_amount": deal.get('fee_amount', 0),
@@ -1080,17 +1423,15 @@ async def refund_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Move deal to history in a transaction-safe manner
     db_success = move_deal_to_history_db(trade_id, history_entry)
     
-    # Only remove from memory if database operation succeeded
-    if db_success:
-        # Save to JSON history file (for backwards compatibility)
-        deal_history.append(history_entry)
-        save_history()
-        
-        # Remove from active deals memory
-        del active_deals[trade_id]
-    else:
-        # If database operation failed, notify admin but keep deal active
-        await update.message.reply_text("⚠️ Database error occurred. Deal remains active. Please try again or contact support.")
+    if not db_success:
+        print(f"⚠️ Transaction move failed for {trade_id}, attempting individual operations...")
+        save_deal_to_history_db(history_entry)
+        delete_active_deal_from_db(trade_id)
+    
+    # Always save to JSON history and remove from memory
+    deal_history.append(history_entry)
+    save_history()
+    del active_deals[trade_id]
     
     # Delete the /refund command message
     try:
@@ -1222,11 +1563,28 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             deal_amount = deal.get('deal_amount', 0)
             ongoing_volume += float(deal_amount) if deal_amount else 0.0
     
-    # Calculate total volume (completed + ongoing)
-    total_volume = stats['total_volume'] + ongoing_volume
-    
-    # Format message
-    ranking_display = f"#{stats['ranking']}" if stats['ranking'] != "N/A" else "N/A"
+    # Fetch manual stats and use them as exact values if present, otherwise use calculated stats
+    manual = fetch_manual_stats(target_username_lower)
+    manual_volume = float(manual['total_volume']) if manual and manual.get('total_volume') else None
+    manual_deals = int(manual['completed_deals']) if manual and manual.get('completed_deals') else None
+    manual_highest = float(manual['highest_deal']) if manual and manual.get('highest_deal') else None
+    manual_ranking = manual.get('ranking') if manual else None
+
+    if manual_volume is not None:
+        combined_volume = manual_volume
+        combined_deals = manual_deals if manual_deals is not None else 0
+        combined_highest = manual_highest if manual_highest is not None else 0.0
+    else:
+        combined_volume = stats['total_volume'] + ongoing_volume
+        combined_deals = stats['total_deals']
+        combined_highest = stats['highest_deal']
+
+    # Use manual ranking if saved, otherwise use calculated ranking
+    ranking_value = manual_ranking if manual_ranking else stats['ranking']
+    if ranking_value and str(ranking_value).upper() != "N/A":
+        ranking_display = f"#{ranking_value}"
+    else:
+        ranking_display = "N/A"
     
     # Escape Markdown special characters in username
     username_escaped = escape_markdown(target_username)
@@ -1234,10 +1592,10 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         f"📊 **Participant Stats for {username_escaped}**\n\n"
         f"👑 Ranking: {ranking_display}\n"
-        f"📈 Total Volume: ${total_volume:.2f}\n"
-        f"🔢 Completed Deals: {stats['total_deals']}\n"
+        f"📈 Total Volume: ${combined_volume:.2f}\n"
+        f"🔢 Completed Deals: {combined_deals}\n"
         f"⏳ Ongoing Deals: {ongoing_deals}\n"
-        f"⚡ Highest Deal: ${stats['highest_deal']:.2f}\n\n"
+        f"⚡ Highest Deal: ${combined_highest:.2f}\n\n"
         f"📊 Always use @Escrow\\_Pagal for safer transactions!"
     )
     
@@ -1367,6 +1725,143 @@ async def adminwise_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message, parse_mode='Markdown')
 
 # ==========================
+# /ADDSTAT COMMAND (Conversation)
+# ==========================
+
+ADDSTAT_VOLUME, ADDSTAT_DEALS, ADDSTAT_HIGHEST = range(3)
+
+async def addstat_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point for /addstat. Identifies the target user and asks for Total Volume."""
+    user = update.message.from_user
+    if user.id not in ADMINS:
+        await update.message.reply_text("🚫 Only authorized admins can use this command.")
+        return ConversationHandler.END
+
+    target_username = None
+    target_user_id = None
+
+    # Option 1: Reply to a user's message
+    if update.message.reply_to_message:
+        replied_user = update.message.reply_to_message.from_user
+        target_username = f"@{replied_user.username}" if replied_user.username else None
+        target_user_id = replied_user.id
+        if not target_username:
+            await update.message.reply_text("⚠️ The replied user has no username.")
+            return ConversationHandler.END
+
+    # Option 2: Argument provided (username or user ID)
+    elif context.args and len(context.args) > 0:
+        arg = context.args[0]
+        if arg.startswith('@'):
+            target_username = arg
+        elif arg.isdigit():
+            target_user_id = int(arg)
+            # Try to resolve username from user ID via Telethon
+            if telethon_client:
+                try:
+                    entity = await telethon_client.get_entity(target_user_id)
+                    if entity.username:
+                        target_username = f"@{entity.username}"
+                except Exception as e:
+                    print(f"⚠️ Could not resolve user ID {arg}: {e}")
+            if not target_username:
+                target_username = f"ID:{arg}"
+        else:
+            target_username = f"@{arg}"
+    else:
+        await update.message.reply_text(
+            "⚠️ Please specify a user.\n\n"
+            "Usage:\n"
+            "• /addstat @username\n"
+            "• /addstat <user_id>\n"
+            "• Reply to a user's message with /addstat"
+        )
+        return ConversationHandler.END
+
+    # Store target info in context for later steps
+    context.user_data['addstat_username'] = target_username
+    context.user_data['addstat_user_id'] = target_user_id
+
+    await update.message.reply_text(
+        f"📊 Adding stats for {target_username}\n\n"
+        f"Step 1/3: Enter Total Volume (in $):"
+    )
+    return ADDSTAT_VOLUME
+
+async def addstat_volume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive Total Volume and ask for Completed Deals."""
+    if await _try_process_full_stats_message(update, context):
+        return ConversationHandler.END
+
+    try:
+        volume = float(update.message.text.strip().replace('$', '').replace(',', ''))
+    except ValueError:
+        await update.message.reply_text("❌ Invalid number. Please enter a valid Total Volume (e.g. 5000):")
+        return ADDSTAT_VOLUME
+
+    context.user_data['addstat_volume'] = volume
+    await update.message.reply_text("Step 2/3: Enter Completed Deals (number):")
+    return ADDSTAT_DEALS
+
+async def addstat_deals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive Completed Deals and ask for Highest Deal."""
+    if await _try_process_full_stats_message(update, context):
+        return ConversationHandler.END
+
+    try:
+        deals = int(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text("❌ Invalid number. Please enter a valid number of Completed Deals (e.g. 25):")
+        return ADDSTAT_DEALS
+
+    context.user_data['addstat_deals'] = deals
+    await update.message.reply_text("Step 3/3: Enter Highest Deal (in $):")
+    return ADDSTAT_HIGHEST
+
+async def addstat_highest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive Highest Deal and save all stats."""
+    if await _try_process_full_stats_message(update, context):
+        return ConversationHandler.END
+
+    try:
+        highest = float(update.message.text.strip().replace('$', '').replace(',', ''))
+    except ValueError:
+        await update.message.reply_text("❌ Invalid number. Please enter a valid Highest Deal (e.g. 500):")
+        return ADDSTAT_HIGHEST
+
+    username = context.user_data.get('addstat_username')
+    user_id = context.user_data.get('addstat_user_id')
+    volume = context.user_data.get('addstat_volume')
+    deals = context.user_data.get('addstat_deals')
+
+    ranking = None
+    success, error_info = save_manual_stats(username, user_id, volume, deals, highest, ranking)
+
+    if success:
+        note = " (saved to local file - DB unavailable)" if error_info == "saved_to_json" else ""
+        await update.message.reply_text(
+            f"✅ Stats updated for {username}{note}\n\n"
+            f"Total Volume: ${volume:,.2f}\n"
+            f"Completed Deals: {deals}\n"
+            f"Highest Deal: ${highest:,.2f}"
+        )
+    else:
+        await update.message.reply_text(f"❌ Failed to save stats.\nError: {error_info}")
+
+    # Clean up user_data
+    for key in ['addstat_username', 'addstat_user_id', 'addstat_volume', 'addstat_deals']:
+        context.user_data.pop(key, None)
+
+    return ConversationHandler.END
+
+async def addstat_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel the /addstat conversation."""
+    for key in ['addstat_username', 'addstat_user_id', 'addstat_volume', 'addstat_deals']:
+        context.user_data.pop(key, None)
+    await update.message.reply_text("❌ /addstat cancelled.")
+    return ConversationHandler.END
+
+# ==========================
 # MAIN FUNCTION
 # ==========================
 
@@ -1378,6 +1873,18 @@ def main():
     load_active_deals_from_db()
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Conversation handler for /addstat (must be added before simple command handlers)
+    addstat_conv = ConversationHandler(
+        entry_points=[CommandHandler("addstat", addstat_start)],
+        states={
+            ADDSTAT_VOLUME: [MessageHandler(filters.TEXT & ~filters.COMMAND, addstat_volume)],
+            ADDSTAT_DEALS: [MessageHandler(filters.TEXT & ~filters.COMMAND, addstat_deals)],
+            ADDSTAT_HIGHEST: [MessageHandler(filters.TEXT & ~filters.COMMAND, addstat_highest)],
+        },
+        fallbacks=[CommandHandler("cancel", addstat_cancel)],
+    )
+    app.add_handler(addstat_conv)
 
     app.add_handler(CommandHandler("add", add_deal))
     app.add_handler(CallbackQueryHandler(fee_selected, pattern=r"^fee_"))
