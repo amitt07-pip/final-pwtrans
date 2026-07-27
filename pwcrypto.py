@@ -5,7 +5,7 @@ if sys.version_info >= (3, 13):
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, ConversationHandler, MessageHandler, filters
-import re, random, string, os, json
+import re, random, string, os, json, html
 from datetime import datetime
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
@@ -160,8 +160,10 @@ def ensure_tables_exist():
                 trade_id TEXT PRIMARY KEY,
                 buyer TEXT,
                 buyer_id TEXT,
+                buyer_display TEXT,
                 seller TEXT,
                 seller_id TEXT,
+                seller_display TEXT,
                 deal_amount NUMERIC,
                 received_amount NUMERIC,
                 fee_percent NUMERIC,
@@ -175,15 +177,20 @@ def ensure_tables_exist():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
+
+        cur.execute("ALTER TABLE active_deals ADD COLUMN IF NOT EXISTS buyer_display TEXT")
+        cur.execute("ALTER TABLE active_deals ADD COLUMN IF NOT EXISTS seller_display TEXT")
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS deal_history (
                 id SERIAL PRIMARY KEY,
                 trade_id TEXT,
                 buyer TEXT,
                 buyer_id TEXT,
+                buyer_display TEXT,
                 seller TEXT,
                 seller_id TEXT,
+                seller_display TEXT,
                 deal_amount NUMERIC,
                 received_amount NUMERIC,
                 fee_amount NUMERIC,
@@ -196,6 +203,9 @@ def ensure_tables_exist():
                 completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        cur.execute("ALTER TABLE deal_history ADD COLUMN IF NOT EXISTS buyer_display TEXT")
+        cur.execute("ALTER TABLE deal_history ADD COLUMN IF NOT EXISTS seller_display TEXT")
         
         cur.execute("""
             CREATE TABLE IF NOT EXISTS manual_stats (
@@ -400,8 +410,10 @@ def load_active_deals_from_db():
             active_deals[trade_id] = {
                 'buyer': row['buyer'],
                 'buyer_id': row['buyer_id'],
+                'buyer_display': row.get('buyer_display'),
                 'seller': row['seller'],
                 'seller_id': row['seller_id'],
+                'seller_display': row.get('seller_display'),
                 'deal_amount': float(row['deal_amount']) if row['deal_amount'] else 0,
                 'received_amount': float(row['received_amount']) if row['received_amount'] else 0,
                 'fee_percent': float(row['fee_percent']) if row['fee_percent'] else None,
@@ -432,16 +444,18 @@ def save_active_deal_to_db(trade_id, deal_data):
         
         cur.execute("""
             INSERT INTO active_deals (
-                trade_id, buyer, buyer_id, seller, seller_id,
+                trade_id, buyer, buyer_id, buyer_display, seller, seller_id, seller_display,
                 deal_amount, received_amount, fee_percent, fee_amount, release_amount,
                 escrow_admin, escrow_admin_name, escrow_admin_id,
                 source_message_id, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (trade_id) DO UPDATE SET
                 buyer = EXCLUDED.buyer,
                 buyer_id = EXCLUDED.buyer_id,
+                buyer_display = EXCLUDED.buyer_display,
                 seller = EXCLUDED.seller,
                 seller_id = EXCLUDED.seller_id,
+                seller_display = EXCLUDED.seller_display,
                 deal_amount = EXCLUDED.deal_amount,
                 received_amount = EXCLUDED.received_amount,
                 fee_percent = EXCLUDED.fee_percent,
@@ -453,8 +467,10 @@ def save_active_deal_to_db(trade_id, deal_data):
             trade_id,
             deal_data['buyer'],
             deal_data.get('buyer_id'),
+            deal_data.get('buyer_display'),
             deal_data['seller'],
             deal_data.get('seller_id'),
+            deal_data.get('seller_display'),
             deal_data['deal_amount'],
             deal_data['received_amount'],
             deal_data.get('fee_percent'),
@@ -501,17 +517,19 @@ def save_deal_to_history_db(deal_data):
         
         cur.execute("""
             INSERT INTO deal_history (
-                trade_id, buyer, buyer_id, seller, seller_id,
+                trade_id, buyer, buyer_id, buyer_display, seller, seller_id, seller_display,
                 deal_amount, received_amount, fee_amount, release_amount,
                 escrow_admin, escrow_admin_id, escrow_admin_name,
                 status, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             deal_data['trade_id'],
             deal_data['buyer'],
             deal_data.get('buyer_id'),
+            deal_data.get('buyer_display'),
             deal_data['seller'],
             deal_data.get('seller_id'),
+            deal_data.get('seller_display'),
             deal_data['deal_amount'],
             deal_data.get('received_amount'),
             deal_data.get('fee_amount'),
@@ -547,17 +565,19 @@ def move_deal_to_history_db(trade_id, deal_data):
         # 1. Insert into history
         cur.execute("""
             INSERT INTO deal_history (
-                trade_id, buyer, buyer_id, seller, seller_id,
+                trade_id, buyer, buyer_id, buyer_display, seller, seller_id, seller_display,
                 deal_amount, received_amount, fee_amount, release_amount,
                 escrow_admin, escrow_admin_id, escrow_admin_name,
                 status, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             deal_data['trade_id'],
             deal_data['buyer'],
             deal_data.get('buyer_id'),
+            deal_data.get('buyer_display'),
             deal_data['seller'],
             deal_data.get('seller_id'),
+            deal_data.get('seller_display'),
             deal_data['deal_amount'],
             deal_data.get('received_amount'),
             deal_data.get('fee_amount'),
@@ -844,6 +864,19 @@ async def try_get_user_id(context, chat_id, username):
         print(f"Could not resolve username {username}: {e}")
         return None
 
+def _user_mention_html(user):
+    """Build an HTML mention string for a Telegram user object."""
+    if not user:
+        return None
+    if user.username:
+        return f"@{user.username}"
+    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+    if not full_name:
+        full_name = "User"
+    else:
+        full_name = html.escape(full_name)
+    return f'<a href="tg://user?id={user.id}">{full_name}</a>'
+
 def parse_deal_text(text, entities=None, sender_user=None):
     """Extract deal info from the format message."""
     # Try to extract username or a case-sensitive "Me" self-reference and optional user ID from text
@@ -858,20 +891,24 @@ def parse_deal_text(text, entities=None, sender_user=None):
     buyer_id = buyer_match.group(2) if buyer_match and buyer_match.group(2) else None
     seller_id = seller_match.group(2) if seller_match and seller_match.group(2) else None
 
+    buyer_display = None
+    seller_display = None
+
     # Resolve case-sensitive "Me" (or "@Me") to the form sender's username/ID
     def resolve_me(value):
         if value and value.lstrip('@') == "Me" and sender_user:
             return (
                 f"@{sender_user.username}" if sender_user.username else f"ID:{sender_user.id}",
-                str(sender_user.id)
+                str(sender_user.id),
+                _user_mention_html(sender_user)
             )
-        return value, None
+        return value, None, None
 
-    buyer_username, me_buyer_id = resolve_me(buyer_username)
+    buyer_username, me_buyer_id, buyer_display = resolve_me(buyer_username)
     if me_buyer_id:
         buyer_id = me_buyer_id
 
-    seller_username, me_seller_id = resolve_me(seller_username)
+    seller_username, me_seller_id, seller_display = resolve_me(seller_username)
     if me_seller_id:
         seller_id = me_seller_id
 
@@ -893,8 +930,10 @@ def parse_deal_text(text, entities=None, sender_user=None):
     return {
         "buyer": buyer_username,
         "buyer_id": buyer_id,
+        "buyer_display": buyer_display,
         "seller": seller_username,
         "seller_id": seller_id,
+        "seller_display": seller_display,
         "amount": float(amount.group(1)) if amount else None
     }
 
@@ -944,8 +983,10 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active_deals[trade_id] = {
         "buyer": info["buyer"],
         "buyer_id": info["buyer_id"],
+        "buyer_display": info.get("buyer_display"),
         "seller": info["seller"],
         "seller_id": info["seller_id"],
+        "seller_display": info.get("seller_display"),
         "deal_amount": info["amount"],
         "received_amount": received_amount,
         "escrow_admin": f"@{user.username}" if user.username else f"ID:{user.id}",
@@ -1005,14 +1046,14 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Save deal to database
         save_active_deal_to_db(trade_id, active_deals[trade_id])
         
-        buyer_info = f"{info['buyer']}"
+        buyer_info = info.get("buyer_display") or f"{info['buyer']}"
         if buyer_id:
             buyer_info += f" [{buyer_id}]"
-        
-        seller_info = f"{info['seller']}"
+
+        seller_info = info.get("seller_display") or f"{info['seller']}"
         if seller_id:
             seller_info += f" [{seller_id}]"
-        
+
         msg = (
             f"<tg-emoji emoji-id='5987880246865565644'>💰</tg-emoji> <b>Deal Amount:</b> ${deal_amount:.2f}\n"
             f"<tg-emoji emoji-id='5877307202888273539'>📤</tg-emoji> <b>Received Amount:</b> ${received_amount:.2f}\n"
@@ -1077,16 +1118,16 @@ async def fee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Save deal to database
     save_active_deal_to_db(trade_id, deal)
 
-    buyer_info = f"{deal['buyer']}"
+    buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
     buyer_id = deal.get('buyer_id')
     if buyer_id:
         buyer_info += f" [{buyer_id}]"
-    
-    seller_info = f"{deal['seller']}"
+
+    seller_info = deal.get('seller_display') or f"{deal['seller']}"
     seller_id = deal.get('seller_id')
     if seller_id:
         seller_info += f" [{seller_id}]"
-    
+
     msg = (
         f"<tg-emoji emoji-id='5987880246865565644'>💰</tg-emoji> <b>Deal Amount:</b> ${deal_amount:.2f}\n"
         f"<tg-emoji emoji-id='5877307202888273539'>📤</tg-emoji> <b>Received Amount:</b> ${received_amount:.2f}\n"
@@ -1153,9 +1194,17 @@ async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ No record found for this trade.")
         return
 
-    buyer_info = f"{deal['buyer']}"
-    seller_info = f"{deal['seller']}"
-    
+    buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
+    if deal.get('buyer_id'):
+        buyer_info += f" [{deal['buyer_id']}]"
+
+    seller_info = deal.get('seller_display') or f"{deal['seller']}"
+    if deal.get('seller_id'):
+        seller_info += f" [{deal['seller_id']}]"
+
+    buyer_vouch = deal.get('buyer_display') or f"{deal['buyer']}"
+    seller_vouch = deal.get('seller_display') or f"{deal['seller']}"
+
     msg = (
         f"<tg-emoji emoji-id='5197474765387864959'>✅</tg-emoji> Deal Completed\n"
         f"<tg-emoji emoji-id='5936017305585586269'>🆔</tg-emoji> Trade ID: {trade_id}\n"
@@ -1164,7 +1213,7 @@ async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Buyer: {buyer_info}\n"
         f"Seller: {seller_info}\n\n"
         f"<tg-emoji emoji-id='5920052658743283381'>🛡</tg-emoji> Escrowed By: {deal['escrow_admin']}\n\n"
-        f"~ {deal['seller']} and {deal['buyer']} are requested to drop the vouch before leaving👇🏻\n\n"
+        f"~ {seller_vouch} and {buyer_vouch} are requested to drop the vouch before leaving👇🏻\n\n"
         f"<code>Vouch @PAGALWORLD for ${deal['deal_amount']:.2f} smooth escrow deal❤️</code>"
     )
 
@@ -1175,8 +1224,10 @@ async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "trade_id": trade_id,
         "buyer": deal['buyer'],
         "buyer_id": deal.get('buyer_id'),
+        "buyer_display": deal.get('buyer_display'),
         "seller": deal['seller'],
         "seller_id": deal.get('seller_id'),
+        "seller_display": deal.get('seller_display'),
         "deal_amount": deal['deal_amount'],
         "received_amount": deal.get('received_amount', deal['deal_amount']),
         "fee_amount": deal.get('fee_amount', 0),
@@ -1260,9 +1311,14 @@ async def refund_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ No record found for this trade.")
         return
 
-    buyer_info = f"{deal['buyer']}"
-    seller_info = f"{deal['seller']}"
-    
+    buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
+    if deal.get('buyer_id'):
+        buyer_info += f" [{deal['buyer_id']}]"
+
+    seller_info = deal.get('seller_display') or f"{deal['seller']}"
+    if deal.get('seller_id'):
+        seller_info += f" [{deal['seller_id']}]"
+
     msg = (
         f"✅ <b>Deal Refunded</b>\n"
         f"🆔 <b>Trade ID:</b> {trade_id}\n"
@@ -1280,8 +1336,10 @@ async def refund_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "trade_id": trade_id,
         "buyer": deal['buyer'],
         "buyer_id": deal.get('buyer_id'),
+        "buyer_display": deal.get('buyer_display'),
         "seller": deal['seller'],
         "seller_id": deal.get('seller_id'),
+        "seller_display": deal.get('seller_display'),
         "deal_amount": deal['deal_amount'],
         "received_amount": deal.get('received_amount', deal['deal_amount']),
         "fee_amount": deal.get('fee_amount', 0),
