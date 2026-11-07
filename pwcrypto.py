@@ -1144,14 +1144,14 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # One or both don't have @Escrow_PagaL, ask for fee selection
         keyboard = [
             [
-                InlineKeyboardButton("Fee: 0.7%", callback_data=f"fee_0.7_{trade_id}"),
-                InlineKeyboardButton("Fee: 1%", callback_data=f"fee_1_{trade_id}")
+                InlineKeyboardButton("OTC Deal", callback_data=f"fee_1_{trade_id}"),
+                InlineKeyboardButton("P2P Deal", callback_data=f"fee_0.7_{trade_id}")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await update.message.reply_to_message.reply_text(
-            "Please select a fee for this deal:",
+            "Please select the deal type :",
             reply_markup=reply_markup
         )
     
