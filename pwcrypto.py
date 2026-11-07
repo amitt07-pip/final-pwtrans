@@ -1219,7 +1219,7 @@ async def fee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(msg, parse_mode="HTML", reply_markup=_deal_action_keyboard(trade_id))
 
-async def finalize_close(trade_id, deal, reply_to):
+async def finalize_release(trade_id, deal, reply_to):
     """Send the Deal Completed message and move the deal to history."""
     buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
     seller_info = deal.get('seller_display') or f"{deal['seller']}"
@@ -1348,7 +1348,7 @@ async def deal_action_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     action, trade_id = query.data.split("_", 1)
     deal = active_deals.get(trade_id)
     if not deal:
-        await query.answer("⚠️ Deal not found or already closed.", show_alert=True)
+        await query.answer("⚠️ Deal not found or already released/refunded.", show_alert=True)
         return
 
     uid = str(query.from_user.id)
@@ -1363,7 +1363,7 @@ async def deal_action_selected(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e:
             print(f"⚠️ Could not remove deal buttons: {e}")
         if action == "rel":
-            await finalize_close(trade_id, deal, query.message)
+            await finalize_release(trade_id, deal, query.message)
         else:
             await finalize_refund(trade_id, deal, query.message)
         return
@@ -1384,20 +1384,20 @@ async def deal_action_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
 
 # ==========================
-# /CLOSE COMMAND
+# /RELEASE COMMAND
 # ==========================
 
-async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Triggered when admin closes a deal."""
+async def release_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Triggered when admin releases a deal."""
     if not update.message.reply_to_message:
-        await update.message.reply_text("⚠️ Please reply to a deal message to use /close.")
+        await update.message.reply_text("⚠️ Please reply to a deal message to use /release.")
         return
 
     user = update.message.from_user
-    print(f"DEBUG: Close triggered by {user.username} (ID: {user.id})")
+    print(f"DEBUG: Release triggered by {user.username} (ID: {user.id})")
 
     if user.id not in ADMINS:
-        await update.message.reply_text("🚫 Only authorized admins can close deals.")
+        await update.message.reply_text("🚫 Only authorized admins can release deals.")
         return
 
     replied_text = update.message.reply_to_message.text
@@ -1436,13 +1436,13 @@ async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ No record found for this trade.")
         return
 
-    await finalize_close(trade_id, deal, update.message.reply_to_message)
+    await finalize_release(trade_id, deal, update.message.reply_to_message)
     
-    # Delete the /close command message
+    # Delete the /release command message
     try:
         await update.message.delete()
     except Exception as e:
-        print(f"⚠️ Could not delete /close command message: {e}")
+        print(f"⚠️ Could not delete /release command message: {e}")
 
 # ==========================
 # /REFUND COMMAND
@@ -1955,7 +1955,7 @@ def main():
     app.add_handler(CommandHandler("add", add_deal))
     app.add_handler(CallbackQueryHandler(fee_selected, pattern=r"^fee_"))
     app.add_handler(CallbackQueryHandler(deal_action_selected, pattern=r"^(rel|ref)_"))
-    app.add_handler(CommandHandler("close", close_deal))
+    app.add_handler(CommandHandler("release", release_deal))
     app.add_handler(CommandHandler("refund", refund_deal))
     app.add_handler(CommandHandler("active_deals", show_active_deals))
     app.add_handler(CommandHandler("stats", show_stats))

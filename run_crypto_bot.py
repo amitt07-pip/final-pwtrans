@@ -47,7 +47,7 @@ def main():
 
     app.add_handler(CommandHandler("add", pwcrypto.add_deal))
     app.add_handler(CallbackQueryHandler(pwcrypto.fee_selected, pattern=r"^fee_"))
-    app.add_handler(CommandHandler("close", pwcrypto.close_deal))
+    app.add_handler(CommandHandler("release", pwcrypto.release_deal))
     app.add_handler(CommandHandler("refund", pwcrypto.refund_deal))
     app.add_handler(CommandHandler("active_deals", pwcrypto.show_active_deals))
     app.add_handler(CommandHandler("stats", pwcrypto.show_stats))
