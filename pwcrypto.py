@@ -1140,10 +1140,12 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<tg-emoji emoji-id='5881702736843511327'>⚠️</tg-emoji> <b><a href='https://t.me/PagaICryptoTransactionzbot?start=dispute_{trade_id.replace('#TID', '')}'>RAISE DISPUTE</a></b>"
         )
         
-        await update.message.reply_to_message.reply_text(
+        summary_msg = await update.message.reply_to_message.reply_text(
             msg, parse_mode="HTML", reply_markup=_deal_action_keyboard(trade_id),
             disable_web_page_preview=True,
         )
+        active_deals[trade_id]["summary_chat_id"] = summary_msg.chat_id
+        active_deals[trade_id]["summary_message_id"] = summary_msg.message_id
     else:
         # One or both don't have @Escrow_PagaL, ask for fee selection
         keyboard = [
@@ -1222,6 +1224,8 @@ async def fee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg, parse_mode="HTML", reply_markup=_deal_action_keyboard(trade_id),
         disable_web_page_preview=True,
     )
+    deal["summary_chat_id"] = query.message.chat_id
+    deal["summary_message_id"] = query.message.message_id
 
 async def finalize_release(trade_id, deal, reply_to):
     """Send the Deal Completed message and move the deal to history."""
@@ -1341,6 +1345,23 @@ def _deal_action_keyboard(trade_id):
         InlineKeyboardButton("❌ Refund", callback_data=f"ref_{trade_id}"),
     ]])
 
+async def _remove_deal_buttons(bot, deal, replied_msg):
+    """Remove Release/Refund buttons from the deal summary after /release or /refund."""
+    targets = set()
+    if deal.get("summary_chat_id") and deal.get("summary_message_id"):
+        targets.add((deal["summary_chat_id"], deal["summary_message_id"]))
+    markup = getattr(replied_msg, "reply_markup", None)
+    if markup and any(
+        (btn.callback_data or "").startswith(("rel_", "ref_"))
+        for row in markup.inline_keyboard for btn in row
+    ):
+        targets.add((replied_msg.chat_id, replied_msg.message_id))
+    for chat_id, message_id in targets:
+        try:
+            await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+        except Exception as e:
+            print(f"⚠️ Could not remove deal buttons: {e}")
+
 def _as_mention(name):
     if not name:
         return "the other party"
@@ -1441,6 +1462,7 @@ async def release_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await finalize_release(trade_id, deal, update.message.reply_to_message)
+    await _remove_deal_buttons(context.bot, deal, update.message.reply_to_message)
     
     # Delete the /release command message
     try:
@@ -1502,6 +1524,7 @@ async def refund_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await finalize_refund(trade_id, deal, update.message.reply_to_message)
+    await _remove_deal_buttons(context.bot, deal, update.message.reply_to_message)
     
     # Delete the /refund command message
     try:
