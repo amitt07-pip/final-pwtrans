@@ -1136,7 +1136,8 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<b>Continue the Deal</b>\n"
             f"<b>Buyer:</b> {buyer_info}\n"
             f"<b>Seller:</b> {seller_info}\n\n"
-            f"<tg-emoji emoji-id='5920052658743283381'>🛡</tg-emoji> <b>Escrowed By:</b> {active_deals[trade_id]['escrow_admin']}"
+            f"<tg-emoji emoji-id='5920052658743283381'>🛡</tg-emoji> <b>Escrowed By:</b> {active_deals[trade_id]['escrow_admin']}\n\n"
+            f"<tg-emoji emoji-id='5881702736843511327'>⚠️</tg-emoji> <b><a href='https://t.me/PagaICryptoTransactionzbot?start=dispute_{trade_id.replace('#TID', '')}'>RAISE DISPUTE</a></b>"
         )
         
         await update.message.reply_to_message.reply_text(msg, parse_mode="HTML")
@@ -1210,7 +1211,8 @@ async def fee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"<b>Continue the Deal</b>\n"
         f"<b>Buyer:</b> {buyer_info}\n"
         f"<b>Seller:</b> {seller_info}\n\n"
-        f"<tg-emoji emoji-id='5920052658743283381'>🛡</tg-emoji> <b>Escrowed By:</b> {deal['escrow_admin']}"
+        f"<tg-emoji emoji-id='5920052658743283381'>🛡</tg-emoji> <b>Escrowed By:</b> {deal['escrow_admin']}\n\n"
+        f"<tg-emoji emoji-id='5881702736843511327'>⚠️</tg-emoji> <b><a href='https://t.me/PagaICryptoTransactionzbot?start=dispute_{trade_id.replace('#TID', '')}'>RAISE DISPUTE</a></b>"
     )
 
     await query.edit_message_text(msg, parse_mode="HTML")
