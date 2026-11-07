@@ -1141,7 +1141,8 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         await update.message.reply_to_message.reply_text(
-            msg, parse_mode="HTML", reply_markup=_deal_action_keyboard(trade_id)
+            msg, parse_mode="HTML", reply_markup=_deal_action_keyboard(trade_id),
+            disable_web_page_preview=True,
         )
     else:
         # One or both don't have @Escrow_PagaL, ask for fee selection
@@ -1217,7 +1218,10 @@ async def fee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"<tg-emoji emoji-id='5881702736843511327'>⚠️</tg-emoji> <b><a href='https://t.me/PagaICryptoTransactionzbot?start=dispute_{trade_id.replace('#TID', '')}'>RAISE DISPUTE</a></b>"
     )
 
-    await query.edit_message_text(msg, parse_mode="HTML", reply_markup=_deal_action_keyboard(trade_id))
+    await query.edit_message_text(
+        msg, parse_mode="HTML", reply_markup=_deal_action_keyboard(trade_id),
+        disable_web_page_preview=True,
+    )
 
 async def finalize_release(trade_id, deal, reply_to):
     """Send the Deal Completed message and move the deal to history."""
