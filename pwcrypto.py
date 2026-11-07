@@ -1140,7 +1140,9 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<tg-emoji emoji-id='5881702736843511327'>⚠️</tg-emoji> <b><a href='https://t.me/PagaICryptoTransactionzbot?start=dispute_{trade_id.replace('#TID', '')}'>RAISE DISPUTE</a></b>"
         )
         
-        await update.message.reply_to_message.reply_text(msg, parse_mode="HTML")
+        await update.message.reply_to_message.reply_text(
+            msg, parse_mode="HTML", reply_markup=_deal_action_keyboard(trade_id)
+        )
     else:
         # One or both don't have @Escrow_PagaL, ask for fee selection
         keyboard = [
@@ -1215,7 +1217,171 @@ async def fee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"<tg-emoji emoji-id='5881702736843511327'>⚠️</tg-emoji> <b><a href='https://t.me/PagaICryptoTransactionzbot?start=dispute_{trade_id.replace('#TID', '')}'>RAISE DISPUTE</a></b>"
     )
 
-    await query.edit_message_text(msg, parse_mode="HTML")
+    await query.edit_message_text(msg, parse_mode="HTML", reply_markup=_deal_action_keyboard(trade_id))
+
+async def finalize_close(trade_id, deal, reply_to):
+    """Send the Deal Completed message and move the deal to history."""
+    buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
+    seller_info = deal.get('seller_display') or f"{deal['seller']}"
+
+    buyer_vouch = deal.get('buyer_display') or f"{deal['buyer']}"
+    seller_vouch = deal.get('seller_display') or f"{deal['seller']}"
+
+    msg = (
+        f"<tg-emoji emoji-id='5197474765387864959'>✅</tg-emoji> Deal Completed\n"
+        f"<tg-emoji emoji-id='5936017305585586269'>🆔</tg-emoji> Trade ID: {trade_id}\n"
+        f"<tg-emoji emoji-id='5879785854284599288'>📤</tg-emoji> Released: ${deal['release_amount']:.2f}\n"
+        f"<tg-emoji emoji-id='5879785854284599288'>ℹ️</tg-emoji> Total Released: ${deal['release_amount']:.2f}\n\n"
+        f"Buyer: {buyer_info}\n"
+        f"Seller: {seller_info}\n\n"
+        f"<tg-emoji emoji-id='5920052658743283381'>🛡</tg-emoji> Escrowed By: {deal['escrow_admin']}\n\n"
+        f"~ {seller_vouch} and {buyer_vouch} are requested to drop the vouch before leaving👇🏻\n\n"
+        f"<code>Vouch @PAGALWORLD for ${deal['deal_amount']:.2f} smooth escrow deal❤️</code>"
+    )
+
+    await reply_to.reply_text(msg, parse_mode="HTML")
+
+    # Prepare history entry
+    history_entry = {
+        "trade_id": trade_id,
+        "buyer": deal['buyer'],
+        "buyer_id": deal.get('buyer_id'),
+        "buyer_display": deal.get('buyer_display'),
+        "seller": deal['seller'],
+        "seller_id": deal.get('seller_id'),
+        "seller_display": deal.get('seller_display'),
+        "deal_amount": deal['deal_amount'],
+        "received_amount": deal.get('received_amount', deal['deal_amount']),
+        "fee_amount": deal.get('fee_amount', 0),
+        "release_amount": deal.get('release_amount', deal['deal_amount']),
+        "escrow_admin": deal['escrow_admin'],
+        "escrow_admin_id": deal.get('escrow_admin_id'),
+        "escrow_admin_name": deal.get('escrow_admin_name', 'Admin'),
+        "created_at": deal.get('created_at'),
+        "status": "completed"
+    }
+    
+    # Move deal to history in a transaction-safe manner
+    db_success = move_deal_to_history_db(trade_id, history_entry)
+    
+    if not db_success:
+        print(f"⚠️ Transaction move failed for {trade_id}, attempting individual operations...")
+        save_deal_to_history_db(history_entry)
+        delete_active_deal_from_db(trade_id)
+    
+    # Always save to JSON history and remove from memory
+    deal_history.append(history_entry)
+    save_history()
+    del active_deals[trade_id]
+
+
+async def finalize_refund(trade_id, deal, reply_to):
+    """Send the Deal Refunded message and move the deal to history."""
+    buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
+    if deal.get('buyer_id'):
+        buyer_info += f" [{deal['buyer_id']}]"
+
+    seller_info = deal.get('seller_display') or f"{deal['seller']}"
+    if deal.get('seller_id'):
+        seller_info += f" [{deal['seller_id']}]"
+
+    msg = (
+        f"✅ <b>Deal Refunded</b>\n"
+        f"🆔 <b>Trade ID:</b> {trade_id}\n"
+        f"📤 <b>Refunded:</b> ${deal['release_amount']:.2f}\n"
+        f"ℹ️ <b>Total Refunded:</b> ${deal['release_amount']:.2f}\n\n"
+        f"<b>Buyer:</b> {buyer_info}\n"
+        f"<b>Seller:</b> {seller_info}\n\n"
+        f"🛡 <b>Escrowed By:</b> {deal['escrow_admin']}\n"
+    )
+
+    await reply_to.reply_text(msg, parse_mode="HTML")
+
+    # Prepare history entry
+    history_entry = {
+        "trade_id": trade_id,
+        "buyer": deal['buyer'],
+        "buyer_id": deal.get('buyer_id'),
+        "buyer_display": deal.get('buyer_display'),
+        "seller": deal['seller'],
+        "seller_id": deal.get('seller_id'),
+        "seller_display": deal.get('seller_display'),
+        "deal_amount": deal['deal_amount'],
+        "received_amount": deal.get('received_amount', deal['deal_amount']),
+        "fee_amount": deal.get('fee_amount', 0),
+        "release_amount": deal.get('release_amount', deal['deal_amount']),
+        "escrow_admin": deal['escrow_admin'],
+        "escrow_admin_id": deal.get('escrow_admin_id'),
+        "escrow_admin_name": deal.get('escrow_admin_name', 'Admin'),
+        "created_at": deal.get('created_at'),
+        "status": "refunded"
+    }
+    
+    # Move deal to history in a transaction-safe manner
+    db_success = move_deal_to_history_db(trade_id, history_entry)
+    
+    if not db_success:
+        print(f"⚠️ Transaction move failed for {trade_id}, attempting individual operations...")
+        save_deal_to_history_db(history_entry)
+        delete_active_deal_from_db(trade_id)
+    
+    # Always save to JSON history and remove from memory
+    deal_history.append(history_entry)
+    save_history()
+    del active_deals[trade_id]
+
+
+def _deal_action_keyboard(trade_id):
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Release", callback_data=f"rel_{trade_id}"),
+        InlineKeyboardButton("❌ Refund", callback_data=f"ref_{trade_id}"),
+    ]])
+
+def _as_mention(name):
+    if not name:
+        return "the other party"
+    return name if name.startswith("@") or name.startswith("ID:") else f"@{name}"
+
+async def deal_action_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the Release / Refund buttons under the deal summary."""
+    query = update.callback_query
+    action, trade_id = query.data.split("_", 1)
+    deal = active_deals.get(trade_id)
+    if not deal:
+        await query.answer("⚠️ Deal not found or already closed.", show_alert=True)
+        return
+
+    uid = str(query.from_user.id)
+    is_starting_admin = uid == str(deal.get("escrow_admin_id"))
+    is_buyer = uid == str(deal.get("buyer_id"))
+    is_seller = uid == str(deal.get("seller_id"))
+
+    if is_starting_admin:
+        await query.answer()
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception as e:
+            print(f"⚠️ Could not remove deal buttons: {e}")
+        if action == "rel":
+            await finalize_close(trade_id, deal, query.message)
+        else:
+            await finalize_refund(trade_id, deal, query.message)
+        return
+
+    if action == "rel" and is_seller:
+        await query.answer(
+            f"❌ Your command is only Refund. Release command is for {_as_mention(deal.get('buyer'))}.",
+            show_alert=True,
+        )
+        return
+    if action == "ref" and is_buyer:
+        await query.answer(
+            f"❌ Your command is only Release. Refund command is for {_as_mention(deal.get('seller'))}.",
+            show_alert=True,
+        )
+        return
+
+    await query.answer()
 
 # ==========================
 # /CLOSE COMMAND
@@ -1270,58 +1436,7 @@ async def close_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ No record found for this trade.")
         return
 
-    buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
-    seller_info = deal.get('seller_display') or f"{deal['seller']}"
-
-    buyer_vouch = deal.get('buyer_display') or f"{deal['buyer']}"
-    seller_vouch = deal.get('seller_display') or f"{deal['seller']}"
-
-    msg = (
-        f"<tg-emoji emoji-id='5197474765387864959'>✅</tg-emoji> Deal Completed\n"
-        f"<tg-emoji emoji-id='5936017305585586269'>🆔</tg-emoji> Trade ID: {trade_id}\n"
-        f"<tg-emoji emoji-id='5879785854284599288'>📤</tg-emoji> Released: ${deal['release_amount']:.2f}\n"
-        f"<tg-emoji emoji-id='5879785854284599288'>ℹ️</tg-emoji> Total Released: ${deal['release_amount']:.2f}\n\n"
-        f"Buyer: {buyer_info}\n"
-        f"Seller: {seller_info}\n\n"
-        f"<tg-emoji emoji-id='5920052658743283381'>🛡</tg-emoji> Escrowed By: {deal['escrow_admin']}\n\n"
-        f"~ {seller_vouch} and {buyer_vouch} are requested to drop the vouch before leaving👇🏻\n\n"
-        f"<code>Vouch @PAGALWORLD for ${deal['deal_amount']:.2f} smooth escrow deal❤️</code>"
-    )
-
-    await update.message.reply_to_message.reply_text(msg, parse_mode="HTML")
-
-    # Prepare history entry
-    history_entry = {
-        "trade_id": trade_id,
-        "buyer": deal['buyer'],
-        "buyer_id": deal.get('buyer_id'),
-        "buyer_display": deal.get('buyer_display'),
-        "seller": deal['seller'],
-        "seller_id": deal.get('seller_id'),
-        "seller_display": deal.get('seller_display'),
-        "deal_amount": deal['deal_amount'],
-        "received_amount": deal.get('received_amount', deal['deal_amount']),
-        "fee_amount": deal.get('fee_amount', 0),
-        "release_amount": deal.get('release_amount', deal['deal_amount']),
-        "escrow_admin": deal['escrow_admin'],
-        "escrow_admin_id": deal.get('escrow_admin_id'),
-        "escrow_admin_name": deal.get('escrow_admin_name', 'Admin'),
-        "created_at": deal.get('created_at'),
-        "status": "completed"
-    }
-    
-    # Move deal to history in a transaction-safe manner
-    db_success = move_deal_to_history_db(trade_id, history_entry)
-    
-    if not db_success:
-        print(f"⚠️ Transaction move failed for {trade_id}, attempting individual operations...")
-        save_deal_to_history_db(history_entry)
-        delete_active_deal_from_db(trade_id)
-    
-    # Always save to JSON history and remove from memory
-    deal_history.append(history_entry)
-    save_history()
-    del active_deals[trade_id]
+    await finalize_close(trade_id, deal, update.message.reply_to_message)
     
     # Delete the /close command message
     try:
@@ -1382,58 +1497,7 @@ async def refund_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ No record found for this trade.")
         return
 
-    buyer_info = deal.get('buyer_display') or f"{deal['buyer']}"
-    if deal.get('buyer_id'):
-        buyer_info += f" [{deal['buyer_id']}]"
-
-    seller_info = deal.get('seller_display') or f"{deal['seller']}"
-    if deal.get('seller_id'):
-        seller_info += f" [{deal['seller_id']}]"
-
-    msg = (
-        f"✅ <b>Deal Refunded</b>\n"
-        f"🆔 <b>Trade ID:</b> {trade_id}\n"
-        f"📤 <b>Refunded:</b> ${deal['release_amount']:.2f}\n"
-        f"ℹ️ <b>Total Refunded:</b> ${deal['release_amount']:.2f}\n\n"
-        f"<b>Buyer:</b> {buyer_info}\n"
-        f"<b>Seller:</b> {seller_info}\n\n"
-        f"🛡 <b>Escrowed By:</b> {deal['escrow_admin']}\n"
-    )
-
-    await update.message.reply_to_message.reply_text(msg, parse_mode="HTML")
-
-    # Prepare history entry
-    history_entry = {
-        "trade_id": trade_id,
-        "buyer": deal['buyer'],
-        "buyer_id": deal.get('buyer_id'),
-        "buyer_display": deal.get('buyer_display'),
-        "seller": deal['seller'],
-        "seller_id": deal.get('seller_id'),
-        "seller_display": deal.get('seller_display'),
-        "deal_amount": deal['deal_amount'],
-        "received_amount": deal.get('received_amount', deal['deal_amount']),
-        "fee_amount": deal.get('fee_amount', 0),
-        "release_amount": deal.get('release_amount', deal['deal_amount']),
-        "escrow_admin": deal['escrow_admin'],
-        "escrow_admin_id": deal.get('escrow_admin_id'),
-        "escrow_admin_name": deal.get('escrow_admin_name', 'Admin'),
-        "created_at": deal.get('created_at'),
-        "status": "refunded"
-    }
-    
-    # Move deal to history in a transaction-safe manner
-    db_success = move_deal_to_history_db(trade_id, history_entry)
-    
-    if not db_success:
-        print(f"⚠️ Transaction move failed for {trade_id}, attempting individual operations...")
-        save_deal_to_history_db(history_entry)
-        delete_active_deal_from_db(trade_id)
-    
-    # Always save to JSON history and remove from memory
-    deal_history.append(history_entry)
-    save_history()
-    del active_deals[trade_id]
+    await finalize_refund(trade_id, deal, update.message.reply_to_message)
     
     # Delete the /refund command message
     try:
@@ -1890,6 +1954,7 @@ def main():
 
     app.add_handler(CommandHandler("add", add_deal))
     app.add_handler(CallbackQueryHandler(fee_selected, pattern=r"^fee_"))
+    app.add_handler(CallbackQueryHandler(deal_action_selected, pattern=r"^(rel|ref)_"))
     app.add_handler(CommandHandler("close", close_deal))
     app.add_handler(CommandHandler("refund", refund_deal))
     app.add_handler(CommandHandler("active_deals", show_active_deals))
